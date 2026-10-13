@@ -1,0 +1,38 @@
+{
+  "title": "alterpaw — your pet's secret life, as a funny wanted poster, newspaper and trading card",
+  "repoName": "alterpaw",
+  "oneLiner": "For pet owners and the friends who buy them gifts, it turns one pet photo into a funny alter-ego bundle (wanted poster with rap sheet, newspaper front page, trading card, bio) for $9–$20 instead of a slow $17–$45 Etsy order.",
+  "overlaps": "giftlet (funny AI copy plus photos in a personal gift page; this is pet-only, fixed templates) and pettycourt (shareable funny AI card); no existing repo covers pets",
+  "tags": [
+    "fun",
+    "consumer",
+    "one-time",
+    "reach:viral",
+    "pets",
+    "gifts",
+    "ai"
+  ],
+  "effort": "Low",
+  "confidence": "Low",
+  "sources": [
+    "https://www.etsy.com/market/wanted_dog_poster?page=4",
+    "https://www.etsy.com/market/pet_trading_card",
+    "https://peerpush.com/p/cardmydog",
+    "https://www.siasat.com/turn-your-pet-photo-into-a-person-chatgpts-latest-viral-fun-3212717/",
+    "https://www.weenect.com/us/en/lab/pets-christmas-gifts-study/",
+    "https://printify.com/shipping-rates/prodigi/",
+    "https://www.etsy.com/listing/866753323/custom-pet-wanted-poster-funny-pet-lover",
+    "https://www.etsy.com/listing/4517971224",
+    "https://www.petfoodindustry.com/pet-food-marketing-and-branding/article/15710630/gifts-for-pets-fuel-seasonal-dog-cat-food-sales",
+    "https://cn.gii.tw/report/omr1882950-global-pet-care-apps-market.html",
+    "https://mwm.ai/apps/petverse-pet-post-tool/6770901984",
+    "https://apps.apple.com/us/app/-/id6752623916",
+    "https://www.adobe.com/fi/express/templates/poster/wanted",
+    "https://wael-nasef-reviews.beehiiv.com/p/ai-pet-portrait-studio-review-2025-the-ultimate-ai-pet-art-creator-for-pet-lovers-and-entrepreneurs",
+    "https://podvector.ai/articles/printful/costs-and-charges/printful-poster-pricing-full-breakdown-for-pod-sellers",
+    "https://redship.io/blog/reddit-self-promotion-rules-2026"
+  ],
+  "seedId": "seed-c412ec",
+  "slug": "alterpaw",
+  "recordedAt": "2026-10-13T08:36:20.600Z"
+}

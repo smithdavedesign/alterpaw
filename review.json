@@ -1,0 +1,56 @@
+{
+  "verdict": "pass",
+  "score": 5,
+  "summary": "Etsy shows people pay $9–$45 for pet wanted posters and cards, but review counts are not sales and ChatGPT does the pet-persona trick free. There is no channel, no named buyer, and the Oct–Dec window would be mostly gone after a test plus a build.",
+  "forcingQuestions": {
+    "demand": {
+      "score": 4,
+      "evidence": "Etsy listings $9.25–$45 with 236 and 1.9k reviews, but reviews are not units. CardMyDog launched May 2026 with 6 upvotes and no reviews. The ChatGPT pet-to-person trend shows love of the joke and a free substitute. No one has paid or asked for it."
+    },
+    "statusQuo": {
+      "score": 5,
+      "evidence": "Etsy sellers (slow, one format), Adobe Express DIY, or a free ChatGPT image. The paid workaround isn't painful; the free one is viral."
+    },
+    "specificity": {
+      "score": 3,
+      "evidence": "Target is 'dog or cat owners who share pet content' and gift buyers: a category. No named person, no consequence; a vanity/gift purchase."
+    },
+    "wedge": {
+      "score": 6,
+      "evidence": "One photo, one alter ego, $9 unlock, no image model is small. Docked because the PRD bundles four templates, six alter egos and a share loop before the first sale."
+    },
+    "futureFit": {
+      "score": 4,
+      "evidence": "Image models and assistants keep getting free and better; the text moat is any free model; templates are cloneable in a weekend."
+    }
+  },
+  "premises": [
+    "Owners pay $9 for a finished bundle although ChatGPT does the image free (unsupported)",
+    "Comedy and story, not art, is what people pay for (unproven)",
+    "A watermarked share loop brings buyers without ads (plausible, unproven)",
+    "Etsy review counts imply real sales volume (weak)",
+    "The Oct–Dec gift season helps (true, but the test window is short)"
+  ],
+  "alternatives": [
+    "Hand-made concierge test: landing page plus $9 pay button, David makes the first 5 bundles by hand",
+    "Full self-serve preview/unlock generator as in the PRD",
+    "Add a pet template to giftlet instead of a new product",
+    "Sell a printable template pack on Etsy or Gumroad"
+  ],
+  "wedge": "One 'Wanted: your dog' poster with an AI-written rap sheet, free watermarked preview, $9 clean download.",
+  "feasibility": {
+    "m1Weekend": true,
+    "zeroCost": true,
+    "notes": "Next.js, HTML/CSS templates, one free-model call via LiteLLM, JSON validation. M1 is $0; paying (M3) needs Stripe and a commercial-use host. Proving test: POST /generate for Biscuit/dog/crime boss returns 200 with alias, 3+ rap-sheet items and five 1–99 stats; invalid model output returns 502 and stores nothing."
+  },
+  "risks": [
+    "Free ChatGPT substitute",
+    "Sales volume unproven; Etsy shows reviews, not units",
+    "No ad-free channel; pet communities restrict promotion",
+    "Short seasonal window and easy copycats",
+    "Uneven free-model humour",
+    "Photo upload hosting, takedown and deletion duties",
+    "No founder fit in David's interests"
+  ],
+  "killCriteria": "Fewer than 5 paid $9 orders from the first 100 visitors or outreach contacts in 30 days; buyers say they would just use ChatGPT; or preview share rate stays under 10%."
+}
