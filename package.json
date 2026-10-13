@@ -1,0 +1,30 @@
+{
+  "name": "alterpaw",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Your pet's secret life, as a funny wanted poster, newspaper front page, trading card and bio card.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test \"test/*.test.js\"",
+    "dev": "node scripts/dev.js",
+    "screenshots": "node scripts/screenshots.mjs"
+  },
+  "dependencies": {
+    "@fontsource/roboto-slab": "^5.3.0",
+    "@fontsource/rye": "^5.3.0",
+    "@neondatabase/serverless": "^1.2.0",
+    "@resvg/resvg-wasm": "^2.6.2",
+    "hono": "^4.13.13",
+    "satori": "^0.56.1"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.9",
+    "@hono/node-server": "^2.1.5",
+    "@vercel/nft": "^1.11.0",
+    "jpeg-js": "^0.4.4",
+    "playwright-core": "^1.64.0"
+  }
+}
