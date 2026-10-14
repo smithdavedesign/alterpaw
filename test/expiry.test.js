@@ -2,7 +2,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { PGlite } from '@electric-sql/pglite';
-import { makeApp, petRecord, SpyStore, DAY_MS } from './helpers.js';
+import { makeApp, petRecord, petForm, generate, createPreview, SpyStore, DAY_MS } from './helpers.js';
 import { PgStore } from '../src/store.js';
 import { PHOTO_RETENTION_DAYS, previewStatus } from '../src/app.js';
 
@@ -93,6 +93,21 @@ describe('photo deletion job (M2 exit criterion 3)', () => {
     assert.match(await page.text(), /expired/i);
     assert.equal((await app.request(`/p/${OLD}/photo`)).status, 410);
     assert.equal((await app.request(`/p/${OLD}/share.png`)).status, 410);
+    assert.equal((await app.request(`/p/${OLD}/share.png`, { method: 'HEAD' })).status, 410, 'HEAD agrees');
+  });
+
+  test('a photo deleted between the record read and the photo read (the job ran in between) is 410, not drawn', async () => {
+    const store = new SpyStore();
+    await store.createPet(petRecord({ slug: FRESH, createdAt: daysAgo(1) }));
+    store.getPhoto = async () => null;
+    let renders = 0;
+    const { app } = makeApp({ store, now: () => NOW, renderShare: async () => (renders++, {}) });
+    for (const path of [`/p/${FRESH}/photo`, `/p/${FRESH}/share.png`, `/p/${FRESH}/share.png?size=story`]) {
+      const res = await app.request(path);
+      assert.equal(res.status, 410, path);
+      assert.match(await res.text(), /expired/i, path);
+    }
+    assert.equal(renders, 0, 'nothing is rendered without the photo');
   });
 
   test('the job logs how many photos it deleted', async () => {
@@ -101,6 +116,75 @@ describe('photo deletion job (M2 exit criterion 3)', () => {
     const { app, logs } = makeApp({ store, now: () => NOW, cronSecret: SECRET });
     await runJob(app);
     assert.ok(logs.some((l) => l.startsWith('info') && l.includes('deleted 1 photo')));
+  });
+});
+
+// The cron is the main trigger, but it needs CRON_SECRET (a manual step) and a host with a scheduler. Uploads
+// run the same deletion too, so photos still go after 30 days, and storage stays bounded, without either.
+describe('uploads also run the deletion (no cron needed)', () => {
+  test('an upload deletes photos past 30 days even with no CRON_SECRET, and that preview then shows "expired"', async () => {
+    const store = new SpyStore();
+    await store.createPet(petRecord({ slug: OLD, createdAt: daysAgo(31) }));
+    await store.createPet(petRecord({ slug: FRESH, createdAt: daysAgo(29) }));
+    const { app, logs } = makeApp({ store, now: () => NOW }); // no cronSecret: the daily job would answer 503
+    assert.equal((await runJob(app)).status, 503);
+
+    const slug = await createPreview(app);
+    assert.equal(await store.getPhoto(OLD), null, 'the old photo is gone from storage');
+    assert.ok((await store.getPet(OLD)).expiredAt instanceof Date);
+    assert.ok(await store.getPhoto(FRESH), 'the 29-day-old photo is kept');
+    assert.ok(await store.getPhoto(slug), 'and so is the new upload');
+    const page = await app.request(`/p/${OLD}`);
+    assert.equal(page.status, 410);
+    assert.match(await page.text(), /expired/i);
+    assert.equal((await app.request(`/p/${slug}`)).status, 200);
+    assert.ok(logs.some((l) => l.startsWith('info') && l.includes('deleted 1 photo')));
+  });
+
+  test('runs at most once an hour per instance, and never for a rejected upload', async () => {
+    const store = new SpyStore();
+    let sweeps = 0;
+    const original = store.expirePhotos.bind(store);
+    store.expirePhotos = async (...args) => (sweeps++, original(...args));
+    let clock = NOW;
+    const { app } = makeApp({ store, now: () => clock });
+
+    assert.equal((await generate(app, petForm({ name: null }))).res.status, 400);
+    assert.equal(sweeps, 0, 'a rejected upload does not sweep');
+    await createPreview(app);
+    await createPreview(app);
+    assert.equal(sweeps, 1, 'two uploads in the same minute sweep once');
+    clock = new Date(NOW.getTime() + 59 * 60 * 1000);
+    await createPreview(app);
+    assert.equal(sweeps, 1, 'still within the hour');
+    clock = new Date(NOW.getTime() + 60 * 60 * 1000);
+    await createPreview(app);
+    assert.equal(sweeps, 2, 'an hour later it sweeps again');
+  });
+
+  test('a slow sweep never holds the upload: it answers after a short wait and the sweep finishes later', { timeout: 5000 }, async () => {
+    const store = new SpyStore();
+    let finish;
+    store.expirePhotos = () => new Promise((resolve) => (finish = resolve));
+    const { app, logs } = makeApp({ store, now: () => NOW, uploadSweepWaitMs: 20 });
+    const { res, body } = await generate(app);
+    assert.equal(res.status, 200, 'answered while the sweep is still running');
+    assert.ok(await store.getPet(body.slug));
+    finish(2);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.ok(logs.some((l) => l.includes('deleted 2 photo')), 'the sweep still completes and logs');
+  });
+
+  test('a failed sweep never fails the upload; it is logged as a warning', async () => {
+    const store = new SpyStore();
+    store.expirePhotos = async () => {
+      throw new Error('connection refused');
+    };
+    const { app, logs } = makeApp({ store, now: () => NOW });
+    const { res, body } = await generate(app);
+    assert.equal(res.status, 200);
+    assert.ok(await store.getPet(body.slug), 'the preview was saved');
+    assert.ok(logs.some((l) => l.startsWith('warn') && l.includes('connection refused')));
   });
 });
 

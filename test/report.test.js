@@ -116,6 +116,42 @@ describe('POST /report (M2 exit criterion 2)', () => {
     assert.equal((await store.getPet(slug)).reports, 0);
   });
 
+  test('a cross-site JSON post is refused too (Hono\'s csrf() only checks form content types)', async () => {
+    const { app, store } = makeApp();
+    const slug = await createPreview(app);
+    const postJson = (headers) =>
+      app.request('/report', {
+        method: 'POST',
+        body: JSON.stringify({ slug }),
+        headers: { 'content-type': 'application/json', accept: 'application/json', 'x-forwarded-for': '198.51.100.1', ...headers },
+      });
+    assert.equal((await postJson({ origin: 'https://evil.example' })).status, 403);
+    assert.equal((await postJson({ 'sec-fetch-site': 'cross-site' })).status, 403);
+    assert.equal((await postJson({ origin: 'https://sub.localhost', 'sec-fetch-site': 'same-site' })).status, 403);
+    assert.equal((await store.getPet(slug)).reports, 0);
+    const same = await postJson({ origin: 'http://localhost', 'sec-fetch-site': 'same-origin' });
+    assert.equal(same.status, 200, 'a same-origin JSON post still works');
+    assert.equal((await store.getPet(slug)).reports, 1);
+  });
+
+  test('an oversized report is 413: a page for a form post, JSON for a JSON client', async () => {
+    const { app, store } = makeApp();
+    const slug = await createPreview(app);
+    const huge = 'x'.repeat(9 * 1024);
+    const form = await reportForm(app, slug, { reason: huge });
+    assert.equal(form.status, 413);
+    assert.match(form.headers.get('content-type') ?? '', /text\/html/);
+    assert.match(await form.text(), /<meta name="robots" content="[^"]*noindex/);
+    const json = await app.request('/report', {
+      method: 'POST',
+      body: JSON.stringify({ slug, reason: huge }),
+      headers: { 'content-type': 'application/json', accept: 'application/json', origin: 'http://localhost' },
+    });
+    assert.equal(json.status, 413);
+    assert.equal(typeof (await json.json()).error, 'string');
+    assert.equal((await store.getPet(slug)).reports, 0);
+  });
+
   test('a browser that sends Origin: null is let through only with Sec-Fetch-Site: same-origin', async () => {
     const { app, store } = makeApp();
     const slug = await createPreview(app);

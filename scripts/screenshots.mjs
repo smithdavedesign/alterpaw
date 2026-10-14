@@ -1,9 +1,13 @@
 // Screenshot proof for the README: `npm run screenshots` (not part of `npm test`).
 // Starts the dev server (scripts/dev.js) on a free port with the service variables removed, so previews live
-// in memory and the canned demo writer is used: no database, no model call, no secrets. Then drives Chromium
-// through the real flow with a sample dog (drawn below, so no real photo or person is involved): fill the form,
-// submit it, open the preview, open the share image. Each step is saved at desktop size (1280×800) and on an
-// iPhone 13, viewport only, as docs/screenshots/<what>-<desktop|mobile>.png.
+// in memory, the canned demo writer is used, and Stripe, Brevo and Prodigi are the dev server's local stand-ins
+// (paid through its own signed webhook): no database, no model call, no secrets, no email sent, nothing
+// printed. Then drives Chromium through the real flow with a sample dog (drawn below, so no real photo or person
+// is involved), at desktop size (1280×800) and on an iPhone 13, viewport only:
+//   home-*            the form, filled in
+//   preview-mobile    the free preview's "Buy it as a gift" form, filled in (M4's core action)
+//   preview-desktop   after paying for the gift and a printed poster: "Your orders" over the clean cards
+//   share-*           the share image of the now-paid preview (no "free preview" stamp)
 // Needs CHROMIUM_PATH pointing at an installed Chromium or Chrome; playwright-core never downloads a browser.
 import { spawn } from 'node:child_process';
 import { mkdir } from 'node:fs/promises';
@@ -16,8 +20,22 @@ const OUT_DIR = 'docs/screenshots';
 const START_TIMEOUT_MS = 30_000;
 const GENERATE_TIMEOUT_MS = 20_000;
 
-// Unset for the app so it never reaches a real database or model, whatever the shell has exported.
-const SERVICE_VARS = ['DATABASE_URL', 'GOOGLE_API_KEY', 'LLM_API_KEY', 'LLM_BASE_URL', 'LLM_MODEL', 'CRON_SECRET'];
+// Unset for the app so it never reaches a real database, model, payment, email or print service, whatever the
+// shell has exported.
+const SERVICE_VARS = [
+  'DATABASE_URL',
+  'GOOGLE_API_KEY',
+  'LLM_API_KEY',
+  'LLM_BASE_URL',
+  'LLM_MODEL',
+  'CRON_SECRET',
+  'STRIPE_SECRET_KEY',
+  'STRIPE_WEBHOOK_SECRET',
+  'BREVO_API_KEY',
+  'EMAIL_FROM',
+  'PRODIGI_API_KEY',
+  'PRODIGI_ENV',
+];
 
 const SAMPLE_PET = {
   name: 'Biscuit',
@@ -26,11 +44,32 @@ const SAMPLE_PET = {
   alterEgo: 'crime-boss',
 };
 
-// The phone gets the Stories-sized share image, the desktop the feed-sized one.
+// Sample people and a sample address (example.com, a fictional street): no real person's data.
+const SAMPLE_GIFT = {
+  recipientEmail: 'jamie@example.com',
+  recipientName: 'Jamie',
+  fromName: 'Sam',
+  message: 'Happy birthday! I always knew Biscuit was up to something.',
+  daysAhead: 6,
+};
+const SAMPLE_ADDRESS = { name: 'Jamie Rivera', line1: '742 Evergreen Terrace', city: 'Portland', state: 'OR', zip: '97201' };
+// The form's default zone when the host sends none (scripts/dev.js has no x-vercel-ip-timezone).
+const GIFT_ZONE = 'America/New_York';
+
+// Which steps each size keeps. The phone gets the Stories-sized share image, the desktop the feed-sized one.
 const VIEWS = [
-  { suffix: 'desktop', context: { viewport: { width: 1280, height: 800 } }, share: { name: 'share-post', query: '' } },
-  { suffix: 'mobile', context: devices['iPhone 13'], share: { name: 'share-story', query: '?size=story' } },
+  { suffix: 'desktop', context: { viewport: { width: 1280, height: 800 } }, giftForm: false, orders: true, share: { name: 'share-post', query: '' } },
+  { suffix: 'mobile', context: devices['iPhone 13'], giftForm: true, orders: false, share: { name: 'share-story', query: '?size=story' } },
 ];
+
+// "YYYY-MM-DD" `days` after today in `timeZone`.
+function dateAhead(days, timeZone) {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-US', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date()).map((p) => [p.type, p.value]),
+  );
+  const day = new Date(Date.UTC(+parts.year, +parts.month - 1, +parts.day + days));
+  return day.toISOString().slice(0, 10);
+}
 
 // A beagle on a sofa, with a collar and a judgmental eyebrow. Rendered to JPEG by the browser at run time.
 const DOG_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="900" height="900" viewBox="0 0 900 900">
@@ -158,9 +197,45 @@ async function captureFlow(browser, base, photo, view) {
       throw new Error(`no preview after submitting the form: ${(await page.textContent('#form-status')) || 'no status shown'}`);
     }
     await imagesLoaded(page);
-    await save(page, `preview-${view.suffix}`);
+    const previewUrl = page.url();
 
-    const share = await page.request.get(`${page.url()}/share.png${view.share.query}`);
+    // M4: buy it as a gift, delivered in six days.
+    await page.click('details.gift > summary');
+    const gift = page.locator('form[action="/gift"]');
+    await gift.locator('input[name="recipientEmail"]').fill(SAMPLE_GIFT.recipientEmail);
+    await gift.locator('input[name="recipientName"]').fill(SAMPLE_GIFT.recipientName);
+    await gift.locator('input[name="fromName"]').fill(SAMPLE_GIFT.fromName);
+    await gift.locator('textarea[name="message"]').fill(SAMPLE_GIFT.message);
+    await gift.locator('input[name="deliverOn"]').fill(dateAhead(SAMPLE_GIFT.daysAhead, GIFT_ZONE));
+    await gift.locator('select[name="timeZone"]').selectOption(GIFT_ZONE);
+    if (view.giftForm) {
+      await page.evaluate(() => {
+        document.activeElement?.blur();
+        document.querySelector('details.gift').scrollIntoView({ block: 'start' });
+        window.scrollBy(0, -12);
+      });
+      await save(page, `preview-${view.suffix}`);
+    }
+    await gift.locator('button[type="submit"]').click();
+    await page.waitForURL(/\?checkout=success$/);
+    if (!(await page.locator('.orders').count())) throw new Error('no "Your orders" box after paying for the gift');
+
+    // M4: then the printed poster, offered on the paid page.
+    await page.click('details.print-details > summary');
+    const print = page.locator('form[action="/print"]');
+    for (const field of ['name', 'line1', 'city', 'zip']) await print.locator(`input[name="${field}"]`).fill(SAMPLE_ADDRESS[field]);
+    await print.locator('select[name="state"]').selectOption(SAMPLE_ADDRESS.state);
+    await print.locator('button[type="submit"]').click();
+    await page.waitForURL(/\?checkout=success$/);
+    const orders = await page.textContent('.orders');
+    if (!/We'll email/.test(orders) || !/Sent to the printer/.test(orders)) throw new Error(`unexpected orders box: ${orders}`);
+    await imagesLoaded(page);
+    if (view.orders) {
+      await page.evaluate(() => window.scrollTo(0, 0));
+      await save(page, `preview-${view.suffix}`);
+    }
+
+    const share = await page.request.get(`${previewUrl}/share.png${view.share.query}`);
     if (!share.ok() || share.headers()['content-type'] !== 'image/png') {
       throw new Error(`share image answered ${share.status()} ${share.headers()['content-type']}`);
     }

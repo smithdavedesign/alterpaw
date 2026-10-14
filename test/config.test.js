@@ -2,9 +2,20 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { depsFromEnv, DEFAULT_LLM_BASE_URL, DEFAULT_LLM_MODEL } from '../src/index.js';
-import { PgStore } from '../src/store.js';
+import { PgStore, MemoryStore } from '../src/store.js';
 import { createApp, redact } from '../src/app.js';
-import { petForm, validCharacter, fakeApiKey } from './helpers.js';
+import {
+  petForm,
+  validCharacter,
+  fakeApiKey,
+  fakeStripeKey,
+  fakeWebhookSecret,
+  fakeBrevoKey,
+  fakeProdigiKey,
+  stripeEvent,
+  postWebhook,
+  petRecord,
+} from './helpers.js';
 
 const quiet = { error() {}, warn() {}, info() {} };
 
@@ -116,6 +127,122 @@ describe('depsFromEnv', () => {
       assert.ok(!line.includes('db host'), 'URL not logged');
     }
     assert.ok(lines.some((l) => l.includes('DATABASE_URL is not a valid')));
+  });
+
+  // M3
+  test('without DATABASE_URL the payment methods refuse too', async () => {
+    const { store } = depsFromEnv({});
+    await assert.rejects(store.markPaid('AAAAAAAAAAAAAAAAAAAAAA', {}), /DATABASE_URL/);
+    await assert.rejects(store.saveRegenerated('AAAAAAAAAAAAAAAAAAAAAA', {}, new Date()), /DATABASE_URL/);
+  });
+
+  test('STRIPE_SECRET_KEY switches on Checkout against the Stripe API; without it there is none', async () => {
+    const seen = [];
+    const fetch = async (url, init) => {
+      seen.push({ url, init });
+      return Response.json({ id: 'cs_test_wiring', url: 'https://checkout.stripe.com/c/pay/cs_test_wiring' });
+    };
+    const key = fakeStripeKey();
+    const { checkout } = depsFromEnv({ STRIPE_SECRET_KEY: key }, { fetch });
+    const slug = 'AbCdEfGhIjKlMnOpQrStUv';
+    const session = await checkout({ slug, successUrl: `https://a.example/p/${slug}?checkout=success`, cancelUrl: `https://a.example/p/${slug}` });
+    assert.equal(session.url, 'https://checkout.stripe.com/c/pay/cs_test_wiring');
+    assert.equal(seen[0].url, 'https://api.stripe.com/v1/checkout/sessions');
+    assert.equal(seen[0].init.headers.authorization, `Bearer ${key}`);
+    assert.equal(depsFromEnv({}).checkout, null);
+  });
+
+  test('STRIPE_WEBHOOK_SECRET verifies the webhook; without it the webhook refuses (503)', async () => {
+    const secret = fakeWebhookSecret();
+    assert.equal(depsFromEnv({ STRIPE_WEBHOOK_SECRET: secret }).webhookSecret, secret);
+    const event = stripeEvent('AbCdEfGhIjKlMnOpQrStUv');
+    const timestamp = Math.floor(Date.now() / 1000);
+    const withSecret = createApp({ ...depsFromEnv({ STRIPE_WEBHOOK_SECRET: secret }), logger: quiet });
+    const ok = await postWebhook(withSecret, event, { secret, timestamp });
+    assert.equal(ok.status, 500, 'verified, then fails on the missing database (not 400/503)');
+    const without = createApp({ ...depsFromEnv({}), logger: quiet });
+    assert.equal((await postWebhook(without, event, { secret, timestamp })).status, 503);
+  });
+
+  test("the dev server's offline checkout marks the in-memory preview paid and returns to it", async () => {
+    const { devCheckout } = await import('../scripts/dev.js');
+    const store = new MemoryStore();
+    await store.createPet(petRecord());
+    const slug = petRecord().slug;
+    const successUrl = `http://localhost:3000/p/${slug}?checkout=success`;
+    const session = await devCheckout(store)({ slug, successUrl, cancelUrl: `http://localhost:3000/p/${slug}` });
+    assert.equal(session.url, successUrl);
+    assert.ok((await store.getPet(slug)).paidAt);
+  });
+
+  // M4
+  test('without DATABASE_URL the order methods refuse too', async () => {
+    const { store } = depsFromEnv({});
+    for (const method of ['createOrder', 'getOrder', 'markOrderPaid', 'listOrders', 'claimDueGifts', 'markGiftSent', 'cancelGift', 'releaseGift', 'setPrintOrder']) {
+      await assert.rejects(store[method]('AAAAAAAAAAAAAAAAAAAAAA', {}), /DATABASE_URL/, method);
+    }
+  });
+
+  test('BREVO_API_KEY and EMAIL_FROM switch on gift email through Brevo; either missing means none', async () => {
+    const seen = [];
+    const fetch = async (url, init) => {
+      seen.push({ url, init });
+      return Response.json({ messageId: 'm1' }, { status: 201 });
+    };
+    const key = fakeBrevoKey();
+    const { sendEmail } = depsFromEnv({ BREVO_API_KEY: key, EMAIL_FROM: 'gifts@alterpaw.example' }, { fetch });
+    await sendEmail({ to: 'jamie@example.com', toName: '', subject: 's', text: 't', html: '<p>t</p>' });
+    assert.equal(seen[0].url, 'https://api.brevo.com/v3/smtp/email');
+    assert.equal(seen[0].init.headers['api-key'], key);
+    assert.equal(JSON.parse(seen[0].init.body).sender.email, 'gifts@alterpaw.example');
+    assert.equal(depsFromEnv({ BREVO_API_KEY: key }).sendEmail, null);
+    assert.equal(depsFromEnv({ EMAIL_FROM: 'gifts@alterpaw.example' }).sendEmail, null);
+    assert.equal(depsFromEnv({ BREVO_API_KEY: key, EMAIL_FROM: 'not an address' }).sendEmail, null);
+  });
+
+  test("PRODIGI_API_KEY switches on prints, on Prodigi's sandbox unless PRODIGI_ENV=live", async () => {
+    const seen = [];
+    const fetch = async (url, init) => {
+      seen.push({ url, init });
+      return Response.json({ outcome: 'Created', order: { id: 'ord_1' } });
+    };
+    const key = fakeProdigiKey();
+    const request = { orderId: 'Order0123456789abcdefg', address: { name: 'J', line1: '1 A St', line2: '', city: 'Portland', state: 'OR', zip: '97201', country: 'US' }, imageUrl: 'https://alterpaw.example/prints/Order0123456789abcdefg/poster.png' };
+    await depsFromEnv({ PRODIGI_API_KEY: key }, { fetch }).printOrder(request);
+    await depsFromEnv({ PRODIGI_API_KEY: key, PRODIGI_ENV: 'live' }, { fetch }).printOrder(request);
+    assert.equal(seen[0].url, 'https://api.sandbox.prodigi.com/v4.0/Orders');
+    assert.equal(seen[1].url, 'https://api.prodigi.com/v4.0/Orders');
+    assert.equal(seen[0].init.headers['x-api-key'], key);
+    assert.equal(depsFromEnv({}).printOrder, null);
+  });
+
+  test('the dev server buys gifts and prints offline through the real webhook, and delivers due gifts', async () => {
+    const { createDevApp } = await import('../scripts/dev.js');
+    const lines = [];
+    const { app, store, runJobs } = createDevApp({}, { log: (line) => lines.push(String(line)) });
+    const { slug } = await (await app.request('/generate', { method: 'POST', body: petForm() })).json();
+    const origin = 'http://localhost:3000';
+    const today = new Date().toISOString().slice(0, 10);
+    const gift = await app.request(`${origin}/gift`, {
+      method: 'POST',
+      headers: { origin },
+      body: new URLSearchParams({ slug, recipientEmail: 'jamie@example.com', fromName: 'Sam', deliverOn: today, timeZone: 'UTC' }),
+    });
+    assert.equal(gift.status, 303);
+    assert.equal(gift.headers.get('location'), `${origin}/p/${slug}?checkout=success`);
+    assert.ok((await store.getPet(slug)).paidAt, 'the gift payment unlocked the preview');
+    await runJobs();
+    assert.ok(lines.some((l) => l.includes('jamie@example.com') && l.includes(`${origin}/p/${slug}`)), 'the dev email is printed, not sent');
+
+    const print = await app.request(`${origin}/print`, {
+      method: 'POST',
+      headers: { origin },
+      body: new URLSearchParams({ slug, name: 'Jamie Rivera', line1: '1 Main St', city: 'Portland', state: 'OR', zip: '97201' }),
+    });
+    assert.equal(print.status, 303);
+    const [order] = (await store.listOrders(slug)).filter((o) => o.kind === 'print');
+    assert.match(order.podOrderId, /^dev-print-/);
+    assert.ok(lines.some((l) => l.includes(`/prints/${order.id}/poster.png`)));
   });
 
   test('importing the production entry builds an app without throwing', async () => {

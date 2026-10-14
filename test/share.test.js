@@ -134,6 +134,22 @@ describe('GET /p/<slug>/share.png (M2 exit criterion 1)', () => {
     assert.equal(seen[0].photo.type, 'image/jpeg');
   });
 
+  test('a HEAD request (link checkers, unfurlers) gets the status and headers without a render', async () => {
+    let renders = 0;
+    const { app } = makeApp({ renderShare: async () => (renders++, { png: solidPng(1, 1, [0, 0, 0]), photoShown: true }) });
+    const slug = await createPreview(app);
+    const res = await app.request(`/p/${slug}/share.png?size=story`, { method: 'HEAD' });
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('content-type'), 'image/png');
+    assert.match(res.headers.get('cache-control') ?? '', /private/);
+    assert.match(res.headers.get('content-disposition') ?? '', /alterpaw-wanted-story\.png/);
+    assert.equal((await app.request('/p/AAAAAAAAAAAAAAAAAAAAAA/share.png', { method: 'HEAD' })).status, 404);
+    assert.equal((await app.request(`/p/${slug}/share.png?size=huge`, { method: 'HEAD' })).status, 400);
+    assert.equal(renders, 0, 'nothing rendered for HEAD');
+    assert.equal((await sharePng(app, slug)).res.status, 200);
+    assert.equal(renders, 1, 'GET still renders');
+  });
+
   test('a renderer failure returns a 500 page, logged, with no internals leaked', async () => {
     const { app, logs } = makeApp({
       renderShare: async () => {
