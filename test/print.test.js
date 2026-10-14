@@ -26,6 +26,8 @@ import { createProdigiPrinter, PrintError, PRINT_SKU, PRODIGI_URLS } from '../sr
 import { parseShippingAddress, InputError, US_STATES } from '../src/input.js';
 import { PRINT_POSTER_SIZE, renderPrintPoster } from '../src/bundle.js';
 import { pngSize, decodePng, countColour, solidJpeg } from './png.js';
+import { PGlite } from '@electric-sql/pglite';
+import { PgStore } from '../src/store.js';
 
 const SECRET = fakeWebhookSecret();
 const SITE = 'https://alterpaw.example';
@@ -129,6 +131,52 @@ describe('a print order creates one print-on-demand order (M4 exit criterion 2)'
     assert.equal(ctx.checkoutCalls.length, 0);
     assert.equal(ctx.store.orders.size, 0);
     assert.equal(ctx.printer.calls.length, 0);
+  });
+
+  test('a JSON field that is not text (null, a number, a list, an object) counts as missing: 400, nothing stored', async () => {
+    const ctx = printApp();
+    const slug = await paidPreview(ctx);
+    for (const field of ['name', 'line1', 'city', 'state', 'zip']) {
+      for (const value of [null, 97201, ['742 Evergreen Terrace', 'Apt 2'], { line: 'x' }]) {
+        const res = await postJson(ctx.app, '/print', addressFields(slug, { [field]: value }));
+        assert.equal(res.status, 400, `${field}=${JSON.stringify(value)}`);
+        assert.ok((await res.json()).fields?.[field], `the response names ${field}`);
+      }
+    }
+    assert.equal(ctx.checkoutCalls.length, 0);
+    assert.equal(ctx.store.orders.size, 0);
+  });
+
+  test('a field made only of invisible characters is missing too: 400, nothing stored', async () => {
+    const ctx = printApp();
+    const slug = await paidPreview(ctx);
+    // Zero-width space, zero-width joiner, Hangul filler, word joiner: not whitespace to JavaScript.
+    for (const field of ['name', 'line1', 'city']) {
+      for (const value of ['\u200b', '\u200d\u200b', '\u3164', '\u2060 \u200b']) {
+        const res = await postJson(ctx.app, '/print', addressFields(slug, { [field]: value }));
+        assert.equal(res.status, 400, `${field}=${JSON.stringify(value)}`);
+        assert.ok((await res.json()).fields?.[field], `the response names ${field}`);
+      }
+    }
+    assert.equal(ctx.checkoutCalls.length, 0);
+    assert.equal(ctx.store.orders.size, 0);
+    // An invisible second line is no second line.
+    assert.equal((await postJson(ctx.app, '/print', addressFields(slug, { line2: '\u200b' }))).status, 200);
+    assert.equal((await ctx.store.getOrder(ctx.checkoutCalls[0].orderId)).details.line2, '');
+  });
+
+  test('on Postgres, an address with a broken UTF-16 character (a JSON client) is stored, not a 500', async () => {
+    const db = new PGlite();
+    try {
+      const ctx = printApp({ store: new PgStore((text, params) => db.query(text, params).then((r) => r.rows)) });
+      const slug = await paidPreview(ctx);
+      const res = await postJson(ctx.app, '/print', addressFields(slug, { line2: `Apt ${String.fromCharCode(0xdc00)}2` }));
+      assert.equal(res.status, 200, await res.clone().text());
+      const order = await ctx.store.getOrder(ctx.checkoutCalls[0].orderId);
+      assert.equal(order.details.line2, 'Apt \ufffd2');
+    } finally {
+      await db.close();
+    }
   });
 
   test('an invalid ZIP, state or country is a 400 too; the second line is optional', async () => {

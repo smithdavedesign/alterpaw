@@ -46,10 +46,23 @@ describe('the Brevo client', () => {
     assert.deepEqual(JSON.parse(seen[0].init.body).to, [{ email: 'jamie@example.com' }]);
   });
 
-  test('failures are EmailErrors without the key: 400 (a bad message) is permanent; the rest can be retried', async () => {
+  test('failures are EmailErrors without the key: a 400 about the recipient is permanent; the rest can be retried', async () => {
     const key = fakeBrevoKey();
     const cases = [
-      [() => Response.json({ code: 'invalid_parameter', message: 'email is not valid' }, { status: 400 }), true],
+      // Brevo's answer for a recipient it won't send to: retrying can't help, so the gift is cancelled and refunded.
+      [() => Response.json({ code: 'invalid_parameter', message: 'email is not valid in to' }, { status: 400 }), true],
+      // A 400 about our own setup (an unverified EMAIL_FROM, or a field we got wrong) must not cancel paid gifts:
+      // once it's fixed, the next run sends them.
+      [
+        () =>
+          Response.json(
+            { code: 'invalid_parameter', message: 'Sending has been rejected because the sender you used gifts@alterpaw.example is not valid. Validate your sender or authenticate your domain' },
+            { status: 400 },
+          ),
+        false,
+      ],
+      [() => Response.json({ code: 'missing_parameter', message: 'subject is missing' }, { status: 400 }), false],
+      [() => new Response('<html>Bad Request</html>', { status: 400 }), false],
       [() => Response.json({ code: 'unauthorized', message: `Key not found: ${key}` }, { status: 401 }), false],
       [() => new Response('rate limited', { status: 429 }), false],
       [() => new Response('upstream', { status: 503 }), false],
@@ -66,6 +79,7 @@ describe('the Brevo client', () => {
         assert.equal(err.permanent, permanent, `case ${i}`);
         assert.ok(!err.message.includes(key), `case ${i}: no key in the message`);
         assert.ok(!err.message.includes('jamie@example.com'), `case ${i}: no address in the message`);
+        assert.ok(!err.message.includes('gifts@alterpaw.example'), `case ${i}: Brevo's text is never repeated`);
         return true;
       });
     }

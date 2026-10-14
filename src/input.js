@@ -34,11 +34,18 @@ export function sniffImageType(bytes) {
   return null;
 }
 
-// Strip control characters and collapse runs of whitespace.
+// Strip control characters and collapse runs of whitespace. A lone UTF-16 surrogate (only a JSON body can carry
+// one) becomes U+FFFD, since Postgres refuses it in jsonb and the request would fail after validation.
 function clean(value) {
   if (typeof value !== 'string') return '';
-  return value.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim();
+  return value.toWellFormed().replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim();
 }
+
+// Zero-width spaces, joiners, Hangul fillers and the like aren't whitespace to JavaScript, so a field made only of
+// them would pass as filled in. They're only ignored for that check: joiners inside real text (emoji) are kept.
+const INVISIBLE = /\p{Default_Ignorable_Code_Point}/gu;
+const blank = (text) => !text.replace(INVISIBLE, '').trim();
+const visible = (text) => (blank(text) ? '' : text);
 
 export async function parsePetForm(form) {
   const name = clean(form.get('name'));
@@ -95,11 +102,15 @@ export function isTimeZone(value) {
   }
 }
 
+// One formatter per zone. Zone names are case-insensitive to Intl, so the key is lower-cased: otherwise every
+// casing a client sends ("aMeRiCa/NeW_yOrK") would add a formatter, and memory would grow without bound.
 const zoneFormats = new Map();
+export const cachedZoneFormats = () => zoneFormats.size;
 function partsIn(instant, timeZone) {
-  if (!zoneFormats.has(timeZone)) {
+  const key = timeZone.toLowerCase();
+  if (!zoneFormats.has(key)) {
     zoneFormats.set(
-      timeZone,
+      key,
       new Intl.DateTimeFormat('en-US', {
         timeZone,
         hourCycle: 'h23',
@@ -112,7 +123,7 @@ function partsIn(instant, timeZone) {
       }),
     );
   }
-  return Object.fromEntries(zoneFormats.get(timeZone).formatToParts(instant).map((p) => [p.type, p.value]));
+  return Object.fromEntries(zoneFormats.get(key).formatToParts(instant).map((p) => [p.type, p.value]));
 }
 
 // The calendar date ("2026-10-20") at `instant` in `timeZone`.
@@ -170,12 +181,12 @@ export function parseGiftForm(input, { now, latest }) {
   if (recipientEmail.length > MAX_EMAIL_LENGTH || !EMAIL_PATTERN.test(recipientEmail)) {
     throw new InputError("That doesn't look like one email address. Please check it.");
   }
-  const recipientName = clean(input.recipientName);
+  const recipientName = visible(clean(input.recipientName));
   if (recipientName.length > MAX_GIFT_NAME_LENGTH) throw new InputError(`The recipient's name must be ${MAX_GIFT_NAME_LENGTH} characters or fewer.`);
   const fromName = clean(input.fromName);
-  if (!fromName) throw new InputError('Please enter your name, so they know who it is from.');
+  if (blank(fromName)) throw new InputError('Please enter your name, so they know who it is from.');
   if (fromName.length > MAX_GIFT_NAME_LENGTH) throw new InputError(`Your name must be ${MAX_GIFT_NAME_LENGTH} characters or fewer.`);
-  const message = clean(input.message);
+  const message = visible(clean(input.message));
   if (message.length > MAX_GIFT_MESSAGE_LENGTH) throw new InputError(`The message must be ${MAX_GIFT_MESSAGE_LENGTH} characters or fewer.`);
 
   const timeZone = input.timeZone === undefined || input.timeZone === '' ? 'UTC' : input.timeZone;
@@ -221,7 +232,7 @@ export function parseShippingAddress(input) {
   const address = {};
   const fields = {};
   for (const { key, label, max, missing } of ADDRESS_FIELDS) {
-    address[key] = clean(input[key]);
+    address[key] = visible(clean(input[key]));
     if (missing && !address[key]) fields[key] = missing;
     else if (address[key].length > max) fields[key] = `${label} must be ${max} characters or fewer.`;
   }

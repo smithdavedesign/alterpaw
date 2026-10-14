@@ -86,13 +86,19 @@ const CHECKOUT_MAX_OPEN_MS = DAY_MS;
 const CHECKOUT_MIN_OPEN_MS = 60 * 60 * 1000;
 
 // M4 gift policy. A gift is due at the first instant of its delivery date in the buyer's chosen zone; the daily
-// job (vercel.json, 14:00 UTC) then sends it on that date from UTC−12 to UTC+14, and a gift already due when it's
-// paid goes at once. The latest date leaves the recipient about a week before the photo is deleted.
+// job (vercel.json, 16:00 UTC) then sends it on that date in every zone, and a gift already due when it's paid
+// goes at once. Hobby fires a daily cron anywhere in its hour, so no zone may start its day inside that hour:
+// 14:00 missed Darwin (UTC+9:30), and 16:00–16:59 UTC is local midnight nowhere (tested against every zone).
+// The latest date leaves the recipient about a week before the photo is deleted.
 export const GIFT_MIN_DAYS_TO_DOWNLOAD = 7;
 // A claimed gift whose run died before settling it is claimable again after this. Far longer than one send
 // (10 s timeout), so a live run is never overtaken.
 export const GIFT_CLAIM_LEASE_MS = 15 * 60 * 1000;
-const GIFT_BATCH = 50; // per run; Brevo's free plan sends 300 a day
+// The job claims gifts in batches until none are due, so a busy day's all go that day, up to Brevo's free plan's
+// 300 emails a day. Failures in a row look like an outage: the run stops instead of waiting on every gift.
+const GIFT_BATCH = 50;
+const GIFT_MAX_BATCHES = 6;
+const GIFT_OUTAGE_FAILURES = 3;
 // Prices are in USD and most buyers are in the US, so with no zone from the host the form starts on New York.
 const DEFAULT_GIFT_ZONE = 'America/New_York';
 const PRINT_FILE_NAME = 'alterpaw-wanted-poster-print.png';
@@ -339,8 +345,8 @@ export function createApp({
     return minDate <= maxDate ? { zone, minDate, maxDate, downloadBy: photoDeletedAt(pet) } : null;
   }
 
-  // Emails one claimed gift. Returns 'sent', 'failed' (worth retrying: the claim is released) or 'cancelled'
-  // (never sendable: logged for a refund). Logs name the order, never the recipient.
+  // Emails one claimed gift. Returns 'sent', 'failed' (worth retrying: deliverGifts releases the claim) or
+  // 'cancelled' (never sendable: logged for a refund). Logs name the order, never the recipient.
   async function deliverGift(order, at) {
     const cancel = async (why) => {
       await store.cancelGift(order.id, at);
@@ -356,21 +362,55 @@ export function createApp({
       await sendEmail({ to: order.details.recipientEmail, toName: order.details.recipientName, ...email });
     } catch (err) {
       if (err instanceof EmailError && err.permanent) return cancel(`the email service refused it (${err.message})`);
-      await store.releaseGift(order.id);
       if (!(err instanceof EmailError)) throw err;
       logger.warn(`gift: order ${order.id} not sent yet (${err.message}); the next run retries`);
       return 'failed';
     }
-    await store.markGiftSent(order.id, at);
+    // It has gone. If recording that fails, the claim is kept (not released), so no run takes it again before the
+    // lease runs out; a run after that may send it twice, which beats never.
+    try {
+      await store.markGiftSent(order.id, at);
+    } catch (err) {
+      logger.error(`gift: order ${order.id} was emailed but not recorded as sent (${redact(err)}); a run after the claim lease may send it again`);
+      return 'sent';
+    }
     logger.info(`gift: order ${order.id} for preview ${order.slug} emailed`);
     return 'sent';
   }
 
-  // Claims the gifts due at `at` (or just order `id`) and emails each; returns the counts.
+  // Claims the gifts due at `at` (or just order `id`) and emails each, batch after batch until none are left, so a
+  // busy day's gifts all go that day. One gift's failure (Brevo, or the database) fails only that gift: it keeps
+  // its claim until the run ends, so this run doesn't take it straight back, and is then released for the next
+  // run. GIFT_OUTAGE_FAILURES in a row end the run, leaving the rest for the next one. Returns the counts.
   async function deliverGifts(at, { id = null } = {}) {
     const counts = { sent: 0, failed: 0, cancelled: 0 };
-    const due = await store.claimDueGifts(at, { staleBefore: new Date(at.getTime() - GIFT_CLAIM_LEASE_MS), limit: GIFT_BATCH, id });
-    for (const order of due) counts[await deliverGift(order, at)] += 1;
+    const toRelease = [];
+    let failedInARow = 0;
+    try {
+      for (let batch = 0; batch < GIFT_MAX_BATCHES && failedInARow < GIFT_OUTAGE_FAILURES; batch++) {
+        const due = await store.claimDueGifts(at, { staleBefore: new Date(at.getTime() - GIFT_CLAIM_LEASE_MS), limit: GIFT_BATCH, id });
+        for (const order of due) {
+          let result = 'failed';
+          if (failedInARow < GIFT_OUTAGE_FAILURES) {
+            try {
+              result = await deliverGift(order, at);
+            } catch (err) {
+              logger.error(`gift: order ${order.id} not sent yet (${redact(err)}); the next run retries`);
+            }
+          }
+          counts[result] += 1;
+          if (result === 'failed') {
+            toRelease.push(order.id);
+            failedInARow += 1;
+          } else failedInARow = 0;
+        }
+        if (due.length < GIFT_BATCH) break;
+      }
+    } finally {
+      for (const orderId of toRelease) {
+        await store.releaseGift(orderId).catch((err) => logger.error(`gift: order ${orderId} not released (${redact(err)}); the claim lease frees it`));
+      }
+    }
     return counts;
   }
 
@@ -830,7 +870,7 @@ export function createApp({
     return (await placePrint(paid)) === 'transient' ? c.json({ error: 'The printer is unavailable; retry.' }, 500) : received();
   }
 
-  // Daily (vercel.json, 14:00 UTC): emails every paid gift whose delivery date has come, once.
+  // Daily (vercel.json, 16:00 UTC): emails every paid gift whose delivery date has come, once.
   app.get('/jobs/deliver-gifts', async (c) => {
     const refusal = await cronRefusal(c, 'deliver-gifts');
     if (refusal) return refusal;

@@ -367,7 +367,9 @@ function orderLine(order) {
   const d = order.details;
   if (order.kind === 'gift') {
     if (order.sentAt) return html`<li><b>Gift.</b> Emailed to ${d ? maskEmail(d.recipientEmail) : 'the recipient'} on ${dateInZone(order.sentAt, d?.timeZone)}.</li>`;
-    if (order.cancelledAt) return html`<li><b>Gift.</b> Not sent, because this preview can no longer be shown. It will be refunded.</li>`;
+    // Cancelled: the address was refused, or its details are gone. (A taken-down preview cancels it too, but then
+    // this page isn't shown at all.)
+    if (order.cancelledAt) return html`<li><b>Gift.</b> Not sent: we couldn't deliver the email${d ? ` to ${maskEmail(d.recipientEmail)}` : ''}. It will be refunded.</li>`;
     if (!d) return html`<li><b>Gift.</b> Paid.</li>`;
     return html`<li><b>Gift.</b> We'll email ${maskEmail(d.recipientEmail)} on ${weekdayDate(d.deliverOn)}${d.timeZone === 'UTC' ? ' (UTC)' : ''}, with the link to this page.</li>`;
   }
