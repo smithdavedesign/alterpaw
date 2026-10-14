@@ -4,6 +4,7 @@
 //
 //   shareTree(pet, …)     → satori element tree (plain objects, no JSX); pure, so tests can read the text
 //   renderSharePng(pet, photo, { size, host }) → { png: Uint8Array, photoShown: boolean, photoProblem?: string }
+//   renderOgPng()         → the site's own 1200×630 link-preview image (go-live), no photo, no user text
 //
 // The paid bundle (bundle.js) reuses the poster, the tree helpers, the fonts and the rasteriser from here.
 //
@@ -16,6 +17,7 @@ import { readFile } from 'node:fs/promises';
 import satori from 'satori';
 import { initWasm, Resvg } from '@resvg/resvg-wasm';
 import { SPECIES_STYLE, SHARE_SIZES } from './views.js';
+import { OG_IMAGE } from './site.js';
 
 export { SHARE_SIZES };
 
@@ -305,6 +307,59 @@ export function photoProblemOf(photo) {
   if (!size) return `unreadable or unsupported ${photo.type} header`;
   if (size.width * size.height > MAX_PHOTO_PIXELS) return `too large to decode (${size.width}×${size.height})`;
   return null;
+}
+
+// Go-live: the site's own link-preview image (Open Graph and Twitter cards, OG_IMAGE in site.js), drawn here
+// from fixed text: the headline beside a sample wanted poster, with a paw print where the photo goes.
+const pawPart = (left, top, width, height) => el('div', { position: 'absolute', left, top, width, height, borderRadius: '50%', background: INK });
+const pawPrint = () =>
+  el('div', { position: 'relative', width: 150, height: 136 }, [
+    pawPart(2, 44, 30, 40),
+    pawPart(32, 6, 34, 44),
+    pawPart(84, 6, 34, 44),
+    pawPart(118, 44, 30, 40),
+    pawPart(33, 66, 84, 66),
+  ]);
+
+export function ogTree() {
+  const { width, height } = OG_IMAGE;
+  const poster = el(
+    'div',
+    {
+      flexDirection: 'column',
+      alignItems: 'center',
+      width: 400,
+      height: 520,
+      background: PAPER,
+      color: INK,
+      border: '10px solid #6b4e26',
+      padding: '22px 26px 20px',
+      transform: 'rotate(3deg)',
+      justifyContent: 'space-between',
+    },
+    [
+      text({ fontFamily: 'Rye', fontSize: 62, lineHeight: 1, letterSpacing: 2 }, 'WANTED'),
+      text({ fontSize: 13, fontWeight: 700, letterSpacing: 1.5, whiteSpace: 'nowrap' }, 'FOR CRIMES AGAINST THE HOUSEHOLD'),
+      el('div', { border: `5px solid ${INK}`, padding: 6, background: '#f3e6c8' }, [
+        el('div', { width: 210, height: 180, background: '#cbb68f', alignItems: 'center', justifyContent: 'center' }, [pawPrint()]),
+      ]),
+      text({ fontSize: 40, fontWeight: 700, letterSpacing: 2 }, 'YOUR PET'),
+      text({ fontSize: 19 }, 'a.k.a. "The Snack Bandit"'),
+      text({ fontSize: 16, fontWeight: 700, borderTop: `3px solid ${INK}`, paddingTop: 8, width: 290, justifyContent: 'center' }, 'REWARD: ONE (1) TENNIS BALL'),
+    ],
+  );
+  const pitch = el('div', { flexDirection: 'column', width: 600, color: '#fff' }, [
+    text({ fontFamily: 'Rye', fontSize: 60, color: BRAND, marginBottom: 18 }, 'alterpaw'),
+    el('div', { fontSize: 66, fontWeight: 700, lineHeight: 1.08, marginBottom: 26 }, "Your pet's secret life, exposed."),
+    el('div', { fontSize: 28, lineHeight: 1.35, color: '#eadfcd' }, 'One photo becomes a wanted poster, a newspaper front page, a trading card and a bio, starring your real pet.'),
+    text({ fontSize: 26, fontWeight: 700, color: BRAND, marginTop: 30 }, 'Free preview · no account'),
+  ]);
+  return el('div', { width, height, background: NIGHT, fontFamily: 'Slab', alignItems: 'center', justifyContent: 'space-between', padding: '0 76px 0 70px' }, [pitch, poster]);
+}
+
+export async function renderOgPng({ read = readFile } = {}) {
+  const fonts = await loadRenderer(read);
+  return rasterise(ogTree(), OG_IMAGE, fonts);
 }
 
 // A photo that can't be drawn (unreadable, unsupported, oversized, or rejected by the decoder) must not cost

@@ -1,13 +1,15 @@
 // Screenshot proof for the README: `npm run screenshots` (not part of `npm test`).
 // Starts the dev server (scripts/dev.js) on a free port with the service variables removed, so previews live
 // in memory, the canned demo writer is used, and Stripe, Brevo and Prodigi are the dev server's local stand-ins
-// (paid through its own signed webhook): no database, no model call, no secrets, no email sent, nothing
-// printed. Then drives Chromium through the real flow with a sample dog (drawn below, so no real photo or person
-// is involved), at desktop size (1280×800) and on an iPhone 13, viewport only:
-//   home-*            the form, filled in
-//   preview-mobile    the free preview's "Buy it as a gift" form, filled in (M4's core action)
-//   preview-desktop   after paying for the gift and a printed poster: "Your orders" over the clean cards
-//   share-*           the share image of the now-paid preview (no "free preview" stamp)
+// (so the Buy button shows, as it does once Stripe is configured): no database, no model call, no secrets, no
+// payment, no email, no visit beacon (not a production deployment, and Playwright sets navigator.webdriver).
+// Then drives Chromium through the core action with a sample dog (drawn below, so no real photo or person is
+// involved), at desktop size (1280×800) and on an iPhone 13, viewport only:
+//   home-desktop      the start page with the form filled in
+//   home-mobile       the end of the form on a phone: the submit button and the footer's Privacy and Terms links
+//   preview-desktop   the result: the free, watermarked preview's cards
+//   preview-mobile    the result on a phone, at the $9 offer: the "Unlock for $9" Buy button and the gift option
+//   share-*           the free preview's share image ("free preview" stamp), feed size and Stories size
 // Needs CHROMIUM_PATH pointing at an installed Chromium or Chrome; playwright-core never downloads a browser.
 import { spawn } from 'node:child_process';
 import { mkdir } from 'node:fs/promises';
@@ -35,6 +37,9 @@ const SERVICE_VARS = [
   'EMAIL_FROM',
   'PRODIGI_API_KEY',
   'PRODIGI_ENV',
+  // Vercel's own: a shell that has them would turn the visit beacon on or move the canonical URLs.
+  'VERCEL_ENV',
+  'VERCEL_PROJECT_PRODUCTION_URL',
 ];
 
 const SAMPLE_PET = {
@@ -44,32 +49,12 @@ const SAMPLE_PET = {
   alterEgo: 'crime-boss',
 };
 
-// Sample people and a sample address (example.com, a fictional street): no real person's data.
-const SAMPLE_GIFT = {
-  recipientEmail: 'jamie@example.com',
-  recipientName: 'Jamie',
-  fromName: 'Sam',
-  message: 'Happy birthday! I always knew Biscuit was up to something.',
-  daysAhead: 6,
-};
-const SAMPLE_ADDRESS = { name: 'Jamie Rivera', line1: '742 Evergreen Terrace', city: 'Portland', state: 'OR', zip: '97201' };
-// The form's default zone when the host sends none (scripts/dev.js has no x-vercel-ip-timezone).
-const GIFT_ZONE = 'America/New_York';
-
-// Which steps each size keeps. The phone gets the Stories-sized share image, the desktop the feed-sized one.
+// Where each size looks. The desktop shows the top of each page, the phone the part a desktop shot can't reach
+// (the footer, the Buy button). The phone gets the Stories-sized share image, the desktop the feed-sized one.
 const VIEWS = [
-  { suffix: 'desktop', context: { viewport: { width: 1280, height: 800 } }, giftForm: false, orders: true, share: { name: 'share-post', query: '' } },
-  { suffix: 'mobile', context: devices['iPhone 13'], giftForm: true, orders: false, share: { name: 'share-story', query: '?size=story' } },
+  { suffix: 'desktop', context: { viewport: { width: 1280, height: 800 } }, homeAt: 'top', previewAt: 'top', share: { name: 'share-post', query: '' } },
+  { suffix: 'mobile', context: devices['iPhone 13'], homeAt: 'footer', previewAt: 'offer', share: { name: 'share-story', query: '?size=story' } },
 ];
-
-// "YYYY-MM-DD" `days` after today in `timeZone`.
-function dateAhead(days, timeZone) {
-  const parts = Object.fromEntries(
-    new Intl.DateTimeFormat('en-US', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date()).map((p) => [p.type, p.value]),
-  );
-  const day = new Date(Date.UTC(+parts.year, +parts.month - 1, +parts.day + days));
-  return day.toISOString().slice(0, 10);
-}
 
 // A beagle on a sofa, with a collar and a judgmental eyebrow. Rendered to JPEG by the browser at run time.
 const DOG_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="900" height="900" viewBox="0 0 900 900">
@@ -165,6 +150,16 @@ const shareViewer = (png) => `<!doctype html>
 const imagesLoaded = (page) =>
   page.waitForFunction(() => [...document.images].filter((img) => !img.hidden).every((img) => img.complete && img.naturalWidth > 0));
 
+// Every page ends with the footer's Privacy and Terms links, and both pages answer.
+async function footerLinks(page) {
+  for (const [label, path] of [['Privacy', '/privacy'], ['Terms', '/terms']]) {
+    const link = page.locator(`footer.site-foot a[href="${path}"]`);
+    if ((await link.textContent()) !== label) throw new Error(`no "${label}" link in the footer of ${page.url()}`);
+    const res = await page.request.get(new URL(path, page.url()).href);
+    if (!res.ok()) throw new Error(`${path} answered ${res.status()}`);
+  }
+}
+
 async function save(page, name) {
   const path = `${OUT_DIR}/${name}.png`;
   await page.screenshot({ path: `${ROOT}${path}` });
@@ -183,13 +178,15 @@ async function captureFlow(browser, base, photo, view) {
     for (const [i, trait] of SAMPLE_PET.traits.entries()) await traitBoxes.nth(i).fill(trait);
     await page.check(`input[name="alterEgo"][value="${SAMPLE_PET.alterEgo}"]`);
     await imagesLoaded(page);
-    // Filling scrolled the phone down to the last field; show the page from the top, nothing focused.
-    await page.evaluate(() => {
+    await footerLinks(page);
+    // Filling scrolled the phone down to the last field; nothing focused, then the top or the very end.
+    await page.evaluate((at) => {
       document.activeElement?.blur();
-      window.scrollTo(0, 0);
-    });
+      window.scrollTo(0, at === 'top' ? 0 : document.documentElement.scrollHeight);
+    }, view.homeAt);
     await save(page, `home-${view.suffix}`);
 
+    // The core action: reveal the secret life.
     await page.click('button[type="submit"]');
     try {
       await page.waitForURL(/\/p\/[\w-]+$/, { timeout: GENERATE_TIMEOUT_MS });
@@ -198,42 +195,18 @@ async function captureFlow(browser, base, photo, view) {
     }
     await imagesLoaded(page);
     const previewUrl = page.url();
-
-    // M4: buy it as a gift, delivered in six days.
-    await page.click('details.gift > summary');
-    const gift = page.locator('form[action="/gift"]');
-    await gift.locator('input[name="recipientEmail"]').fill(SAMPLE_GIFT.recipientEmail);
-    await gift.locator('input[name="recipientName"]').fill(SAMPLE_GIFT.recipientName);
-    await gift.locator('input[name="fromName"]').fill(SAMPLE_GIFT.fromName);
-    await gift.locator('textarea[name="message"]').fill(SAMPLE_GIFT.message);
-    await gift.locator('input[name="deliverOn"]').fill(dateAhead(SAMPLE_GIFT.daysAhead, GIFT_ZONE));
-    await gift.locator('select[name="timeZone"]').selectOption(GIFT_ZONE);
-    if (view.giftForm) {
-      await page.evaluate(() => {
-        document.activeElement?.blur();
-        document.querySelector('details.gift').scrollIntoView({ block: 'start' });
+    if ((await page.locator('.card .watermark').count()) !== 4) throw new Error('the free preview should show 4 watermarked cards');
+    const buy = page.locator('form[action="/checkout"][data-checkout] button[type="submit"]');
+    if (!(await buy.isVisible()) || !/Unlock for \$9/.test(await buy.textContent())) throw new Error('no visible "Unlock for $9" Buy button');
+    await footerLinks(page);
+    await page.evaluate((at) => {
+      if (at === 'top') window.scrollTo(0, 0);
+      else {
+        document.querySelector('.unlock').scrollIntoView({ block: 'start' });
         window.scrollBy(0, -12);
-      });
-      await save(page, `preview-${view.suffix}`);
-    }
-    await gift.locator('button[type="submit"]').click();
-    await page.waitForURL(/\?checkout=success$/);
-    if (!(await page.locator('.orders').count())) throw new Error('no "Your orders" box after paying for the gift');
-
-    // M4: then the printed poster, offered on the paid page.
-    await page.click('details.print-details > summary');
-    const print = page.locator('form[action="/print"]');
-    for (const field of ['name', 'line1', 'city', 'zip']) await print.locator(`input[name="${field}"]`).fill(SAMPLE_ADDRESS[field]);
-    await print.locator('select[name="state"]').selectOption(SAMPLE_ADDRESS.state);
-    await print.locator('button[type="submit"]').click();
-    await page.waitForURL(/\?checkout=success$/);
-    const orders = await page.textContent('.orders');
-    if (!/We'll email/.test(orders) || !/Sent to the printer/.test(orders)) throw new Error(`unexpected orders box: ${orders}`);
-    await imagesLoaded(page);
-    if (view.orders) {
-      await page.evaluate(() => window.scrollTo(0, 0));
-      await save(page, `preview-${view.suffix}`);
-    }
+      }
+    }, view.previewAt);
+    await save(page, `preview-${view.suffix}`);
 
     const share = await page.request.get(`${previewUrl}/share.png${view.share.query}`);
     if (!share.ok() || share.headers()['content-type'] !== 'image/png') {
