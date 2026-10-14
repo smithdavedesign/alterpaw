@@ -3,7 +3,8 @@
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { serve } from '@hono/node-server';
-import { MB, makeApp, petForm, jpegBytes } from './helpers.js';
+import { unzipSync } from 'fflate';
+import { MB, makeApp, petForm, jpegBytes, fakeCheckout, fakeWebhookSecret, stripeEvent, stripeSignature } from './helpers.js';
 
 describe('over HTTP', () => {
   let server;
@@ -76,5 +77,56 @@ describe('over HTTP', () => {
     const photo = new File(['hello'], 'pet.png', { type: 'image/png' });
     const res = await fetch(`${base}/generate`, { method: 'POST', body: petForm({ photo }) });
     assert.equal(res.status, 400);
+  });
+});
+
+// M3: the paid flow over a real socket. The bundle here is a 6 MB stand-in, bigger than Vercel's 4.5 MB
+// cap on buffered responses, to check the streamed body arrives whole with a matching Content-Length.
+describe('over HTTP: paying and downloading (M3)', () => {
+  const secret = fakeWebhookSecret();
+  const big = new Uint8Array(6 * MB).map((_, i) => (i * 31) & 255);
+  let server;
+  let base;
+  let ctx;
+
+  before(async () => {
+    const { checkout } = fakeCheckout();
+    const renderBundle = async () => ({ files: [{ name: 'big.png', bytes: big }], photoShown: true });
+    ctx = makeApp({ checkout, webhookSecret: secret, renderBundle });
+    await new Promise((resolve) => {
+      server = serve({ fetch: ctx.app.fetch, port: 0, hostname: '127.0.0.1' }, (info) => {
+        base = `http://127.0.0.1:${info.port}`;
+        resolve();
+      });
+    });
+  });
+
+  after(() => {
+    server.closeAllConnections();
+    return new Promise((resolve) => server.close(() => resolve()));
+  });
+
+  test('pay form → 303 to Stripe; signed webhook → paid; then a 6 MB bundle streams whole', async () => {
+    const { slug } = await (await fetch(`${base}/generate`, { method: 'POST', body: petForm() })).json();
+    assert.equal((await fetch(`${base}/p/${slug}/bundle.zip`)).status, 402);
+
+    const pay = await fetch(`${base}/checkout`, { method: 'POST', body: new URLSearchParams({ slug }), headers: { origin: base }, redirect: 'manual' });
+    assert.equal(pay.status, 303);
+    assert.match(pay.headers.get('location'), /^https:\/\/checkout\.stripe\.com\//);
+
+    const payload = JSON.stringify(stripeEvent(slug));
+    const hook = await fetch(`${base}/stripe/webhook`, {
+      method: 'POST',
+      body: payload,
+      headers: { 'content-type': 'application/json', 'stripe-signature': stripeSignature(payload, secret, Math.floor(Date.now() / 1000)) },
+    });
+    assert.equal(hook.status, 200);
+
+    const res = await fetch(`${base}/p/${slug}/bundle.zip`);
+    assert.equal(res.status, 200);
+    const zip = new Uint8Array(await res.arrayBuffer());
+    assert.equal(Number(res.headers.get('content-length')), zip.length);
+    assert.ok(zip.length > 6 * MB);
+    assert.deepEqual(Buffer.from(unzipSync(zip)['big.png']), Buffer.from(big));
   });
 });

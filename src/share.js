@@ -1,8 +1,11 @@
 // Share images: the wanted poster as a PNG sized for Instagram (1080×1350) and Stories/Reels/TikTok
-// (1080×1920), with the real photo, a "free preview" stamp and a "make your pet's" line.
+// (1080×1920), with the real photo, a "free preview" stamp (until the bundle is paid for) and a "make your
+// pet's" line.
 //
 //   shareTree(pet, …)     → satori element tree (plain objects, no JSX); pure, so tests can read the text
 //   renderSharePng(pet, photo, { size, host }) → { png: Uint8Array, photoShown: boolean, photoProblem?: string }
+//
+// The paid bundle (bundle.js) reuses the poster, the tree helpers, the fonts and the rasteriser from here.
 //
 // satori lays the tree out and turns every glyph into an SVG path, so user and model text never becomes markup.
 // resvg (WebAssembly) rasterises the SVG. Both are pure JS/WASM: no install scripts, no native binaries.
@@ -83,6 +86,12 @@ export function loadFonts(read = readFile) {
   return fontsReady;
 }
 
+// resvg and the fonts, ready to render; resolves to the fonts satori needs.
+export async function loadRenderer(read = readFile) {
+  const [, fonts] = await Promise.all([initResvg(read), loadFonts(read)]);
+  return fonts;
+}
+
 // Keeps the characters the fonts above can draw. Emoji, CJK and other scripts would come out as boxes
 // (satori has no fallback for them without a network fetch), so they're left out of the image; the
 // preview page itself still shows the text as typed.
@@ -129,13 +138,13 @@ export function imageSize(bytes, type) {
 
 // Satori wants React-shaped nodes; a div with more than one child must say how to lay them out.
 // Satori sizes boxes like a browser (content-box); border-box keeps the fixed widths below honest.
-const el = (type, style, children = []) => ({
+export const el = (type, style, children = []) => ({
   type,
   props: { style: { display: 'flex', boxSizing: 'border-box', ...style }, children },
 });
-const text = (style, value) => el('div', style, String(value));
+export const text = (style, value) => el('div', style, String(value));
 // Long model text is cut with an ellipsis after `lines` lines instead of pushing the layout around.
-const clamp = (lines, style, value) => ({
+export const clamp = (lines, style, value) => ({
   type: 'div',
   props: {
     style: { display: 'block', lineClamp: lines, overflow: 'hidden', wordBreak: 'break-word', boxSizing: 'border-box', ...style },
@@ -143,53 +152,83 @@ const clamp = (lines, style, value) => ({
   },
 });
 // Names are capped at 30 characters (input.js); shrink long ones so they stay on one line.
-const nameSize = (name) => (name.length <= 12 ? 72 : name.length <= 20 ? 56 : 42);
+export const nameSize = (name) => (name.length <= 12 ? 72 : name.length <= 20 ? 56 : 42);
+export const posterName = (pet) => drawable(pet.name).toUpperCase() || NO_NAME;
 
-function photoBlock(photoSrc, side) {
-  const inner = photoSrc
-    ? { type: 'img', props: { src: photoSrc, width: side, height: side, style: { objectFit: 'cover' } } }
-    : el('div', { width: side, height: side, background: '#cbb68f', alignItems: 'center', justifyContent: 'center' }, [
+// The photo, or a "PHOTO ON FILE" panel when there is none to draw.
+export function photoOrPlaceholder(photoSrc, width, height, style = {}) {
+  return photoSrc
+    ? { type: 'img', props: { src: photoSrc, width, height, style: { objectFit: 'cover', ...style } } }
+    : el('div', { width, height, background: '#cbb68f', alignItems: 'center', justifyContent: 'center', ...style }, [
         text({ fontSize: 40, color: INK, fontWeight: 700 }, 'PHOTO ON FILE'),
       ]);
+}
+
+function photoBlock(photoSrc, side, stamp) {
   return el('div', { position: 'relative', border: `6px solid ${INK}`, padding: 8, background: '#f3e6c8', flexShrink: 0 }, [
-    inner,
-    text(
-      {
-        position: 'absolute',
-        top: 26,
-        right: -40,
-        transform: 'rotate(14deg)',
-        border: `6px solid ${STAMP}`,
-        color: STAMP,
-        background: 'rgba(234, 217, 181, 0.85)',
-        padding: '6px 18px',
-        fontSize: 34,
-        fontWeight: 700,
-        letterSpacing: 4,
-      },
-      'FREE PREVIEW',
-    ),
+    photoOrPlaceholder(photoSrc, side, side),
+    ...(stamp
+      ? [
+          text(
+            {
+              position: 'absolute',
+              top: 26,
+              right: -40,
+              transform: 'rotate(14deg)',
+              border: `6px solid ${STAMP}`,
+              color: STAMP,
+              background: 'rgba(234, 217, 181, 0.85)',
+              padding: '6px 18px',
+              fontSize: 34,
+              fontWeight: 700,
+              letterSpacing: 4,
+            },
+            'FREE PREVIEW',
+          ),
+        ]
+      : []),
   ]);
 }
 
+// The share images frame the poster on a dark background with the "make your pet's" footer. The stamp
+// goes once the bundle is paid for: a buyer's own share shouldn't say "free preview".
 export function shareTree(pet, { size = 'post', host = 'alterpaw', photoSrc = null } = {}) {
   const { width, height } = SHARE_SIZES[size];
-  const layout = LAYOUT[size];
+  const posterWidth = width - 2 * MARGIN;
+  const poster = wantedPoster(pet, {
+    width: posterWidth,
+    height: height - 2 * MARGIN - FOOTER,
+    layout: LAYOUT[size],
+    photoSrc,
+    stamp: !pet.paidAt,
+  });
+
+  const footer = el('div', { width: posterWidth, height: FOOTER, alignItems: 'center', justifyContent: 'space-between', paddingTop: 12, color: '#fff' }, [
+    text({ fontFamily: 'Rye', fontSize: 44, color: BRAND }, 'alterpaw'),
+    text({ fontSize: 30, fontWeight: 700 }, `Make your pet's at ${host}`),
+  ]);
+
+  return el('div', { flexDirection: 'column', width, height, background: NIGHT, padding: MARGIN, fontFamily: 'Slab' }, [poster, footer]);
+}
+
+// The poster on its own, `width`×`height`. `layout` is { photo, wanted, charges, headline }: the photo side,
+// the WANTED size, how many charges and whether the front-page headline fits.
+export function wantedPoster(pet, { width, height, layout, photoSrc = null, stamp = true }) {
   const c = pet.character;
   const style = SPECIES_STYLE[pet.species] ?? SPECIES_STYLE.other;
-  const name = drawable(pet.name).toUpperCase() || NO_NAME;
+  const name = posterName(pet);
   const alias = drawable(c.alias);
   const charges = c.rapSheet.slice(0, layout.charges).map(drawable).filter(Boolean);
-  const posterWidth = width - 2 * MARGIN;
-  const textWidth = posterWidth - 2 * 10 - 2 * 44; // borders and padding
+  const textWidth = width - 2 * 10 - 2 * 44; // borders and padding
 
   const heading = el('div', { flexDirection: 'column', alignItems: 'center', flexShrink: 0 }, [
     text({ fontFamily: 'Rye', fontSize: layout.wanted, lineHeight: 1, letterSpacing: 8 }, 'WANTED'),
     text({ fontSize: 26, fontWeight: 700, letterSpacing: 6, marginTop: 6 }, 'FOR CRIMES AGAINST THE HOUSEHOLD'),
   ]);
 
+  // The name is one line; a name of 30 wide capitals (W) would run past the frame, so it's clipped at the edge.
   const identity = el('div', { flexDirection: 'column', alignItems: 'center', width: textWidth, flexShrink: 0 }, [
-    text({ fontSize: nameSize(name), fontWeight: 700, lineHeight: 1.1, whiteSpace: 'nowrap' }, name),
+    text({ fontSize: nameSize(name), fontWeight: 700, lineHeight: 1.1, whiteSpace: 'nowrap', maxWidth: textWidth, overflow: 'hidden' }, name),
     ...(alias ? [clamp(2, { fontSize: 32, lineHeight: 1.2, marginTop: 4, textAlign: 'center', width: textWidth }, `a.k.a. ${alias}`)] : []),
   ]);
 
@@ -221,50 +260,47 @@ export function shareTree(pet, { size = 'post', host = 'alterpaw', photoSrc = nu
   );
 
   // Blocks are spread evenly down the poster, so short text leaves even gaps rather than one hole.
-  const poster = el(
+  return el(
     'div',
     {
       flexDirection: 'column',
       alignItems: 'center',
       justifyContent: 'space-between',
-      width: posterWidth,
-      height: height - 2 * MARGIN - FOOTER,
+      width,
+      height,
       background: PAPER,
       color: INK,
       border: '10px solid #6b4e26',
       padding: '26px 44px 22px',
       overflow: 'hidden',
     },
-    [heading, photoBlock(photoSrc, layout.photo), identity, ...headline, rapSheet, reward],
+    [heading, photoBlock(photoSrc, layout.photo, stamp), identity, ...headline, rapSheet, reward],
   );
-
-  const footer = el('div', { width: posterWidth, height: FOOTER, alignItems: 'center', justifyContent: 'space-between', paddingTop: 12, color: '#fff' }, [
-    text({ fontFamily: 'Rye', fontSize: 44, color: BRAND }, 'alterpaw'),
-    text({ fontSize: 30, fontWeight: 700 }, `Make your pet's at ${host}`),
-  ]);
-
-  return el('div', { flexDirection: 'column', width, height, background: NIGHT, padding: MARGIN, fontFamily: 'Slab' }, [poster, footer]);
 }
 
-const dataUrl = (photo) => `data:${photo.type};base64,${Buffer.from(photo.bytes).toString('base64')}`;
+export const dataUrl = (photo) => `data:${photo.type};base64,${Buffer.from(photo.bytes).toString('base64')}`;
 
-async function rasterise(tree, { width, height }, fonts) {
+// Lays the tree out at `width`×`height` and rasterises it `zoom` times larger (text is vector, so it stays
+// sharp). Calls `use(image)` with resvg's image (`width`, `height`, `pixels` RGBA, `asPng()`) and frees it
+// afterwards: wasm memory is not garbage-collected.
+export async function rasterise(tree, { width, height }, fonts, { zoom = 1, use = (image) => image.asPng() } = {}) {
   const svg = await satori(tree, { width, height, fonts });
-  const resvg = new Resvg(svg, { fitTo: { mode: 'original' } });
+  const resvg = new Resvg(svg, { fitTo: zoom === 1 ? { mode: 'original' } : { mode: 'zoom', value: zoom } });
   try {
     const image = resvg.render();
     try {
-      return image.asPng();
+      return use(image);
     } finally {
       image.free();
     }
   } finally {
-    resvg.free(); // wasm memory is not garbage-collected
+    resvg.free();
   }
 }
 
 // Why a photo can't be drawn, or null if it can.
-function photoProblemOf(photo) {
+export function photoProblemOf(photo) {
+  if (!photo) return 'no photo';
   const size = imageSize(photo.bytes, photo.type);
   if (!size) return `unreadable or unsupported ${photo.type} header`;
   if (size.width * size.height > MAX_PHOTO_PIXELS) return `too large to decode (${size.width}×${size.height})`;
@@ -276,8 +312,8 @@ function photoProblemOf(photo) {
 // `read` is injectable so tests can make asset loading fail.
 export async function renderSharePng(pet, photo, { size = 'post', host, read = readFile } = {}) {
   if (!Object.hasOwn(SHARE_SIZES, size) || !Object.hasOwn(LAYOUT, size)) throw new RangeError(`unknown share size: ${size}`);
-  const [, fonts] = await Promise.all([initResvg(read), loadFonts(read)]);
-  let photoProblem = photo ? photoProblemOf(photo) : 'no photo';
+  const fonts = await loadRenderer(read);
+  let photoProblem = photoProblemOf(photo);
   if (!photoProblem) {
     const tree = shareTree(pet, { size, host, photoSrc: dataUrl(photo) });
     try {

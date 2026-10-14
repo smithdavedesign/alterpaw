@@ -7,9 +7,17 @@
 //   LLM_API_KEY     optional key for LLM_BASE_URL
 //   LLM_MODEL       optional model name
 //   CRON_SECRET     bearer token for the daily photo-deletion job; Vercel Cron sends it automatically
+//   STRIPE_SECRET_KEY      Stripe secret (or restricted) key; without it checkout answers 503
+//   STRIPE_WEBHOOK_SECRET  signing secret of the Stripe webhook endpoint; without it the webhook answers 503
+//   BREVO_API_KEY + EMAIL_FROM  Brevo v3 API key and its verified sender address; without both, no gifts (M4)
+//   PRODIGI_API_KEY        Prodigi Print API key; without it, no printed posters (M4)
+//   PRODIGI_ENV            'live' sends print orders to Prodigi's live API; anything else uses its sandbox
 import { neon } from '@neondatabase/serverless';
 import { createApp } from './app.js';
 import { createChatCompletion } from './character.js';
+import { createBrevoSender } from './email.js';
+import { createStripeCheckout } from './payments.js';
+import { createProdigiPrinter } from './print.js';
 import { PgStore } from './store.js';
 
 export const DEFAULT_LLM_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/openai';
@@ -21,8 +29,28 @@ const unconfiguredStore = (message) => {
   const fail = async () => {
     throw new Error(message);
   };
-  return { createPet: fail, getPet: fail, getPhoto: fail, reportPet: fail, expirePhotos: fail };
+  return {
+    createPet: fail,
+    getPet: fail,
+    getPhoto: fail,
+    reportPet: fail,
+    expirePhotos: fail,
+    markPaid: fail,
+    saveRegenerated: fail,
+    createOrder: fail,
+    getOrder: fail,
+    markOrderPaid: fail,
+    listOrders: fail,
+    claimDueGifts: fail,
+    markGiftSent: fail,
+    cancelGift: fail,
+    releaseGift: fail,
+    setPrintOrder: fail,
+  };
 };
+
+// The sender must be a plain address (Brevo checks that it is verified); anything else leaves gifts off.
+const isEmailAddress = (value) => typeof value === 'string' && /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(value);
 
 // Checked here because Neon's own error for a malformed URL quotes the whole string, password included.
 function isPostgresUrl(value) {
@@ -54,7 +82,18 @@ export function depsFromEnv(env, { fetch = globalThis.fetch } = {}) {
     model: env.LLM_MODEL || DEFAULT_LLM_MODEL,
     fetch,
   });
-  return { store, complete, cronSecret: env.CRON_SECRET || '' };
+  return {
+    store,
+    complete,
+    cronSecret: env.CRON_SECRET || '',
+    checkout: env.STRIPE_SECRET_KEY ? createStripeCheckout({ secretKey: env.STRIPE_SECRET_KEY, fetch }) : null,
+    webhookSecret: env.STRIPE_WEBHOOK_SECRET || '',
+    sendEmail:
+      env.BREVO_API_KEY && isEmailAddress(env.EMAIL_FROM) ? createBrevoSender({ apiKey: env.BREVO_API_KEY, from: env.EMAIL_FROM, fetch }) : null,
+    printOrder: env.PRODIGI_API_KEY
+      ? createProdigiPrinter({ apiKey: env.PRODIGI_API_KEY, environment: env.PRODIGI_ENV === 'live' ? 'live' : 'sandbox', fetch })
+      : null,
+  };
 }
 
 export default createApp(depsFromEnv(process.env));

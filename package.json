@@ -5,7 +5,7 @@
   "description": "Your pet's secret life, as a funny wanted poster, newspaper front page, trading card and bio card.",
   "type": "module",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.2"
   },
   "scripts": {
     "test": "node --test \"test/*.test.js\"",
@@ -24,6 +24,7 @@
     "@electric-sql/pglite": "^0.5.9",
     "@hono/node-server": "^2.1.5",
     "@vercel/nft": "^1.11.0",
+    "fflate": "^0.7.3",
     "jpeg-js": "^0.4.4",
     "playwright-core": "^1.64.0"
   }

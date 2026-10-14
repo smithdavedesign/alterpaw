@@ -1,4 +1,5 @@
 // Shared fixtures for the test suite. No network, no keys, no database.
+import { createHmac } from 'node:crypto';
 import { createApp } from '../src/app.js';
 import { MemoryStore } from '../src/store.js';
 
@@ -136,3 +137,182 @@ export async function generate(app, form = petForm()) {
 
 // Fake credentials are assembled at runtime so secret scanners don't flag the repo.
 export const fakeApiKey = () => ['test', 'key', 'A1b2C3d4'.repeat(4)].join('-');
+export const fakeWebhookSecret = (filler = 'A1b2C3d4') => ['whsec', filler.repeat(4)].join('_');
+export const fakeStripeKey = () => ['rk', 'test', 'A1b2C3d4'.repeat(6)].join('_');
+export const fakeSessionId = (n = 1) => ['cs', 'test', `Session${n}`.padEnd(24, 'x')].join('_');
+
+// M3: a stand-in for createStripeCheckout. Records every call and answers like Stripe does.
+export function fakeCheckout() {
+  const calls = [];
+  const checkout = async (request) => {
+    calls.push(request);
+    const id = fakeSessionId(calls.length);
+    return { id, url: `https://checkout.stripe.com/c/pay/${id}` };
+  };
+  return { checkout, calls };
+}
+
+// A Stripe event as the webhook receives it. `session` overrides fields of the Checkout Session.
+export function stripeEvent(slug, { type = 'checkout.session.completed', id = 'evt_test_1', session = {} } = {}) {
+  return {
+    id,
+    object: 'event',
+    type,
+    created: 1_760_000_000,
+    data: {
+      object: {
+        id: fakeSessionId(1),
+        object: 'checkout.session',
+        mode: 'payment',
+        amount_total: 900,
+        currency: 'usd',
+        payment_status: 'paid',
+        client_reference_id: slug,
+        metadata: { slug },
+        ...session,
+      },
+    },
+  };
+}
+
+// Signs like Stripe: v1 = hex HMAC-SHA256 of "<t>.<raw body>" with the endpoint secret. Uses node:crypto,
+// an implementation independent of the Web Crypto code under test.
+export function stripeSignature(payload, secret, timestamp) {
+  const v1 = createHmac('sha256', secret).update(`${timestamp}.${payload}`).digest('hex');
+  return `t=${timestamp},v1=${v1}`;
+}
+
+// POSTs an event to /stripe/webhook. `signature` overrides the header (null leaves it out).
+export function postWebhook(app, event, { secret, timestamp, signature, body } = {}) {
+  const payload = body ?? JSON.stringify(event);
+  const header = signature !== undefined ? signature : stripeSignature(payload, secret, timestamp);
+  return app.request('/stripe/webhook', {
+    method: 'POST',
+    body: payload,
+    headers: { 'content-type': 'application/json', ...(header !== null ? { 'stripe-signature': header } : {}) },
+  });
+}
+
+// A same-origin form post, the way the preview page's buttons send it. Pass origin: null to leave it out.
+export function postForm(app, path, fields, { origin = 'http://localhost', accept = 'text/html', headers = {} } = {}) {
+  return app.request(path, {
+    method: 'POST',
+    body: new URLSearchParams(fields),
+    headers: { ...(origin !== null ? { origin } : {}), accept, ...headers },
+  });
+}
+
+// Marks a preview paid the only way production can: a signed webhook. `timestamp` must be near the app's clock.
+export async function payFor(app, slug, secret, timestamp = Math.floor(Date.now() / 1000)) {
+  const res = await postWebhook(app, stripeEvent(slug), { secret, timestamp });
+  if (res.status !== 200) throw new Error(`webhook failed: ${res.status} ${await res.text()}`);
+}
+
+// M4 -----------------------------------------------------------------------------------------------------
+
+export const fakeCronSecret = () => ['cron', 'Zq9x'.repeat(8)].join('-');
+export const fakeBrevoKey = () => ['xkeysib', 'A1b2C3d4'.repeat(8), 'Q9w8E7r6'.repeat(2)].join('-');
+export const fakeProdigiKey = () => ['A1b2C3d4'.repeat(1), 'E5f6', 'G7h8', 'I9j0', 'K1l2M3n4O5p6'].join('-');
+export const unixSeconds = (date) => Math.floor(date.getTime() / 1000);
+
+// A clock the test moves by hand: makeApp({ now: clock.now }) and then clock.set('2026-10-20T14:05:00Z').
+export function testClock(start) {
+  let current = new Date(start);
+  return {
+    now: () => new Date(current),
+    set: (when) => {
+      current = new Date(when);
+    },
+    seconds: () => unixSeconds(current),
+  };
+}
+
+// A stand-in for the Brevo sender: keeps every message; `failWith(err)` makes the next call throw.
+export function fakeEmail() {
+  const sent = [];
+  const failures = [];
+  const sendEmail = async (message) => {
+    const failure = failures.shift();
+    if (failure) throw failure;
+    sent.push(structuredClone(message));
+    return { id: `msg-${sent.length}` };
+  };
+  return { sendEmail, sent, failWith: (err) => failures.push(err) };
+}
+
+// A stand-in for the Prodigi client that deduplicates like Prodigi does: one print-on-demand order per order
+// id (Prodigi's idempotency key is derived from it). `orders` is what Prodigi would have.
+export function fakePrinter() {
+  const calls = [];
+  const orders = new Map();
+  const failures = [];
+  const printOrder = async (request) => {
+    calls.push(structuredClone(request));
+    const failure = failures.shift();
+    if (failure) throw failure;
+    if (!orders.has(request.orderId)) orders.set(request.orderId, { id: `ord_${orders.size + 1}`, ...structuredClone(request) });
+    return { id: orders.get(request.orderId).id };
+  };
+  return { printOrder, calls, orders, failWith: (err) => failures.push(err) };
+}
+
+// The gift form as the preview page posts it.
+export function giftFields(slug, overrides = {}) {
+  return {
+    slug,
+    recipientName: 'Jamie',
+    recipientEmail: 'jamie@example.com',
+    fromName: 'Sam',
+    message: 'Happy birthday! Biscuit has been hiding things from you.',
+    deliverOn: '2026-10-20',
+    timeZone: 'America/New_York',
+    ...overrides,
+  };
+}
+
+// The print form as the paid preview page posts it.
+export function addressFields(slug, overrides = {}) {
+  return {
+    slug,
+    name: 'Jamie Rivera',
+    line1: '742 Evergreen Terrace',
+    line2: 'Apt 2',
+    city: 'Portland',
+    state: 'OR',
+    zip: '97201',
+    ...overrides,
+  };
+}
+
+// Pays for an order (gift or print) the way Stripe confirms it: a signed event for the Checkout Session that
+// the app asked for. `request` is the call recorded by fakeCheckout. `session` overrides session fields.
+export async function payOrder(app, request, secret, timestamp, { session = {}, sessionNumber = 1, expect = 200 } = {}) {
+  const { PRODUCTS } = await import('../src/payments.js');
+  const event = stripeEvent(request.slug, {
+    id: `evt_test_order_${sessionNumber}`,
+    session: {
+      id: fakeSessionId(sessionNumber),
+      amount_total: PRODUCTS[request.product].cents,
+      metadata: { slug: request.slug, order: request.orderId, kind: request.product },
+      ...session,
+    },
+  });
+  const res = await postWebhook(app, event, { secret, timestamp });
+  if (expect !== null && res.status !== expect) throw new Error(`webhook answered ${res.status}: ${await res.text()}`);
+  return res;
+}
+
+// Runs the gift delivery job the way Vercel Cron calls it.
+export async function runGiftJob(app, secret) {
+  const res = await app.request('/jobs/deliver-gifts', { headers: { authorization: `Bearer ${secret}` } });
+  const body = res.headers.get('content-type')?.includes('application/json') ? await res.json() : await res.text();
+  return { res, body };
+}
+
+export function postJson(app, path, value, { origin = 'http://localhost', headers = {} } = {}) {
+  return app.request(path, {
+    method: 'POST',
+    body: JSON.stringify(value),
+    headers: { 'content-type': 'application/json', accept: 'application/json', ...(origin !== null ? { origin } : {}), ...headers },
+  });
+}
