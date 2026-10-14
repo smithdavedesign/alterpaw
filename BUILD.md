@@ -1088,7 +1088,11 @@ Other code paths covered:
 | POST | `/checkout` | **M3.** Form or JSON: `slug`. Same-origin only (403). **303** to Stripe Checkout (JSON: `{ url }`); the session closes after 24 h or when the preview expires, whichever is sooner · **303** back to `/p/:slug` if it's already paid · **400** missing or malformed slug · 404 · **410** expired, taken down, or under an hour from expiry · **502** Stripe failed · **503** `STRIPE_SECRET_KEY` not set |
 | POST | `/stripe/webhook` | **M3.** Stripe only: raw JSON with a `Stripe-Signature` header. The preview comes from `metadata.slug` only, and the session must be $9 in `usd`. **200** `{ received: true }` for every verified event, including ignored types, unpaid sessions, other amounts, and unknown or no-longer-live previews (all logged for a refund or a check) · **400** missing, invalid or stale signature, or a signed body that isn't an event · **413** over 256 KB · **503** `STRIPE_WEBHOOK_SECRET` not set · **500** storage failed (Stripe retries) |
 | POST | `/regenerate` | **M3.** Form or JSON: `slug`. Same-origin only (403). **200** `{ ok, character }` (form: **303** to the preview) · **402** not paid · **409** the one rewrite is used · **502** model failed (the rewrite is still available) · 400 · 404 · 410 · 500 |
-| GET | `/legal` | **M3.** Terms, refunds and privacy (indexable) |
+| GET | `/legal` | **M3.** Was terms, refunds and privacy on one page. **Go-live:** a 301 to `/terms` |
+| GET | `/terms`, `/privacy` | **Go-live.** Terms (refunds, no warranty, contact) and privacy (what's stored, processors, no cookies, the visit counter's three events). Indexable, with search and sharing tags (see LAUNCH-READY.md) |
+| GET | `/robots.txt`, `/sitemap.xml` | **Go-live.** Allow all, point at the sitemap; the sitemap lists `/`, `/privacy`, `/terms` on the canonical origin (`VERCEL_PROJECT_PRODUCTION_URL`, else the request's) |
+| GET | `/og.png` | **Go-live.** The 1200×630 link-preview image, drawn by `renderOgPng` (share.js), rendered once per instance, `public, max-age=86400`, `Cross-Origin-Resource-Policy: cross-origin` |
+| GET | `/beacon.js` | **Go-live.** The RepoHQ visit beacon (`src/site.js`); pages load it only when `VERCEL_ENV=production` |
 | POST | `/gift` | **M4.** Form or JSON: `slug`, `recipientEmail`, `recipientName` (optional, ≤ 40), `fromName` (≤ 40), `message` (optional, ≤ 300), `deliverOn` (`YYYY-MM-DD`), `timeZone` (IANA; absent means UTC). Same-origin only (403). **303** to a $9 Stripe Checkout (JSON: `{ url }`) · **303** back to `/p/:slug` if already paid · **400** `{ error }` or a page, for any invalid field (nothing stored, nothing charged) · 404 · **410** expired, taken down or under an hour left · **502** Stripe failed · **503** Brevo, `CRON_SECRET` or Stripe not set |
 | POST | `/print` | **M4.** Form or JSON: `slug`, `name`, `line1`, `line2` (optional), `city`, `state` (two-letter US code), `zip` (5 or 9 digits), `country` (optional, `US` only). Same-origin only (403). **303** to a $29 Stripe Checkout (JSON: `{ url }`) · **400** `{ error, fields }` naming every bad field, or a page listing them (nothing stored, nothing charged) · **402** preview not paid · 404 · 410 · 502 · **503** Prodigi or Stripe not set |
 | GET | `/prints/:id/poster.png` | **M4.** The print file Prodigi fetches: 3600×4800 PNG, streamed with a `Content-Length`, `private`, noindex. Only for a **paid print order** on a live preview; **404** otherwise, **410** if the preview expired or was taken down. HEAD doesn't render |
@@ -1100,7 +1104,7 @@ Other code paths covered:
 
 ```sh
 npm install
-npm test          # 402 tests (about 45 s), no network, no keys, no database, no Stripe, Brevo or Prodigi account
+npm test          # 436 tests (about 45 s), no network, no keys, no database, no Stripe, Brevo or Prodigi account
                   # Node 22.2 or later (zlib.crc32)
 npm run dev       # http://localhost:3000
 ```
@@ -1170,7 +1174,19 @@ Trying M2 locally:
 ### Screenshots
 
 `CHROMIUM_PATH=<path to an installed Chromium> npm run screenshots` regenerates the six PNGs at the top of the
-README (`docs/screenshots/`). It is separate from `npm test`. What it does, and the choices made:
+README (`docs/screenshots/`). It is separate from `npm test`.
+
+**Go-live run (current).** The shots now prove the launch-ready site rather than the M4 flows:
+- **What it captures:** the filled-in form; the end of the form with the footer's Privacy · Terms links; the
+  watermarked result; the $9 offer with the "Unlock for $9" Buy button; and the free preview's two share
+  images.
+- **What it checks:** that the footer links answer, that the Buy button is visible and that the four cards are
+  watermarked.
+- **Environment:** it also strips `VERCEL_ENV` and `VERCEL_PROJECT_PRODUCTION_URL` from the child's
+  environment.
+- **The M4 path:** the gift and print flows are no longer clicked through here; `npm test` covers them.
+
+The notes below are from the M4 run and still describe how the script works:
 - **Starts `scripts/dev.js` itself** on a free port and stops it afterwards. There is no build step, so the
   dev server is the production code path (same `createApp`). `DATABASE_URL`, the model variables,
   `CRON_SECRET` and every Stripe, Brevo and Prodigi variable are removed from the child's environment. So a
@@ -1292,9 +1308,10 @@ this). **Test-mode payments on Hobby are fine; live mode is not.** Go-live check
    allows commercial use (paid, so outside the $0 rule) or move to a free host that allows commercial use
    and gives a request ~4 s of CPU and ~200 MB of memory.
 2. Swap both Stripe values for live-mode ones. The live webhook endpoint has its own signing secret.
-3. Turn on Stripe's "Successful payments" customer emails. `/legal` tells buyers to reply to the receipt
+3. Turn on Stripe's "Successful payments" customer emails. `/terms` tells buyers to reply to the receipt
    for refunds, so receipts must go out with a support email that reaches David.
-4. Re-read `/legal` (`legalPage` in `src/views.js`): the 14-day refund promise and the processor list are
+4. Re-read `/terms` and `/privacy` (`termsPage` and `privacyPage` in `src/views.js`; `/legal` redirects to
+   `/terms` since go-live): the 14-day refund promise, the no-warranty section and the processor list are
    David's to confirm. M4 adds the gift and print terms, a 30-day reprint-or-refund promise for posters,
    and Brevo and Prodigi as processors.
 5. **M4:**
@@ -1471,11 +1488,11 @@ the shared `wantedPoster`, so the share images and the bundle had it too, and it
   - the commercial-use host decision (requested);
   - live Stripe keys;
   - Stripe receipts switched on;
-  - David's read of `/legal` (refund window, contact, the M4 terms);
+  - David's read of `/terms` and `/privacy` (refund window, no warranty, the M4 terms);
   - M4 only: Prodigi's live key and card, one real test print, and a decision on sales tax for posters.
 
-  `/legal` has no contact email: it points buyers at the Stripe receipt. Add an address there if David
-  wants one on the page.
+  Since go-live, both pages give the GitHub repo's issues as the contact, and refunds still go through the
+  Stripe receipt. Add an email address there if David wants one on the page.
 - **Host choice.** Share images take about 0.5 s of CPU each, and bundles about 4 s. That rules out the
   Cloudflare Workers *free* plan (10 ms of CPU per request). Two options remain: a Node host, or Workers Paid.
   Render, Fly and Koyeb run the app unchanged with `@hono/node-server`, but check their free-tier CPU: 0.1
@@ -1507,8 +1524,8 @@ the shared `wantedPoster`, so the share images and the bundle had it too, and it
     The smallest version is a `share_count` column bumped on each `share.png` request; it's not built,
     because no exit criterion needs it.
 - **Not built in M2, on purpose:**
-  - Open Graph tags, which would put the poster in iMessage/WhatsApp link previews. They need an absolute
-    URL and a 1.91:1 crop.
+  - Open Graph tags **on previews**, which would put the pet's poster in iMessage/WhatsApp link previews.
+    They need a 1.91:1 crop of the poster. (Go-live gave the public pages their own tags and a site image.)
   - A moderation UI (SQL is enough; see Operations).
   - Email to David when something is reported. M4 now has an email client (Brevo), so this is one call in
     `/report`, but it needs David's address as config and isn't an exit criterion. The log line is still the

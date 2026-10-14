@@ -481,14 +481,16 @@ describe('POST /checkout', () => {
 });
 
 describe('the $9 offer on an unpaid preview', () => {
-  test('the preview has a pay form posting the slug to /checkout, the price, and a link to the terms', async () => {
-    const { app } = makeApp();
+  test('the preview has a pay form posting the slug to /checkout, the price, and links to the terms and privacy', async () => {
+    const { app } = makeApp({ checkout: fakeCheckout().checkout });
     const slug = await createPreview(app);
     const html = await (await app.request(`/p/${slug}`)).text();
     assert.match(html, /<form[^>]*method="post"[^>]*action="\/checkout"/);
     assert.ok(html.includes(`<input type="hidden" name="slug" value="${slug}">`));
     assert.ok(html.includes('$9'), 'the price is shown');
-    assert.match(html, /href="\/legal"/);
+    const offer = html.match(/<section class="unlock"[\s\S]*?<\/section>/)?.[0] ?? '';
+    assert.match(offer, /href="\/terms"/);
+    assert.match(offer, /href="\/privacy"/);
     assert.ok(!html.includes(`/p/${slug}/bundle.zip`), 'no download link before payment');
   });
 
@@ -508,23 +510,31 @@ describe('the $9 offer on an unpaid preview', () => {
   });
 });
 
-describe('GET /legal (terms, refunds, privacy)', () => {
-  test('one indexable page covering terms, refunds and privacy, with the price and the 30-day deletion', async () => {
+describe('GET /terms and /privacy (they replace /legal)', () => {
+  test('two indexable pages covering terms, refunds and privacy, with the price and the 30-day deletion', async () => {
     const { app } = makeApp();
-    const res = await app.request('/legal');
-    assert.equal(res.status, 200);
-    const html = await res.text();
-    for (const heading of ['Terms', 'Refunds', 'Privacy']) assert.match(html, new RegExp(`<h2[^>]*>${heading}`), heading);
-    assert.ok(html.includes('$9'));
-    assert.match(html, /30 days/);
-    assert.match(html, /Stripe/);
-    assert.match(html, /<meta name="robots" content="index/);
+    const terms = await app.request('/terms');
+    const privacy = await app.request('/privacy');
+    assert.equal(terms.status, 200);
+    assert.equal(privacy.status, 200);
+    const termsHtml = await terms.text();
+    const privacyHtml = await privacy.text();
+    assert.match(termsHtml, /<h1>Terms<\/h1>/);
+    assert.match(termsHtml, /<h2[^>]*>Refunds/);
+    assert.match(privacyHtml, /<h1>Privacy<\/h1>/);
+    assert.ok(termsHtml.includes('$9'));
+    for (const html of [termsHtml, privacyHtml]) {
+      assert.match(html, /30 days/);
+      assert.match(html, /Stripe/);
+      assert.match(html, /<meta name="robots" content="index/);
+    }
   });
 
-  test('the home page links to it', async () => {
+  test('the home page links to both', async () => {
     const { app } = makeApp();
     const html = await (await app.request('/')).text();
-    assert.match(html, /href="\/legal"/);
+    assert.match(html, /href="\/terms"/);
+    assert.match(html, /href="\/privacy"/);
     assert.ok(html.includes('$9'), 'the home page says what the paid bundle costs');
   });
 });

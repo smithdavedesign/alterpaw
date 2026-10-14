@@ -646,13 +646,13 @@ describe('the gift email', () => {
   });
 });
 
-describe('/legal covers M4', () => {
-  test('gifts, printed posters, the new data and who processes it', async () => {
+describe('/terms and /privacy cover M4', () => {
+  test('gifts and printed posters in the terms; the new data and who processes it in the privacy page', async () => {
     const { app } = makeApp();
-    const html = await (await app.request('/legal')).text();
-    for (const text of [/gift/i, /recipient/i, /printed poster/i, /\$29/, /shipping address/i, /United States/, /Brevo/, /Prodigi/]) {
-      assert.match(html, text, String(text));
-    }
+    const terms = await (await app.request('/terms')).text();
+    for (const text of [/gift/i, /recipient/i, /printed poster/i, /\$29/, /United States/]) assert.match(terms, text, String(text));
+    const privacy = await (await app.request('/privacy')).text();
+    for (const text of [/gift/i, /recipient/i, /printed poster/i, /shipping address/i, /Brevo/, /Prodigi/]) assert.match(privacy, text, String(text));
   });
 });
 

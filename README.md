@@ -2,25 +2,25 @@
 
 ## Screenshots
 
-![Home page on desktop with the form filled in for Biscuit the dog](docs/screenshots/home-desktop.png)
-The start page takes a photo (shrunk in the browser), a name, species, three traits and an alter ego, and tells gift buyers to upload the recipient's pet.
+![The start page on desktop, with the form filled in for Biscuit the dog and the photo chosen](docs/screenshots/home-desktop.png)
+The start page takes one photo (shrunk in the browser), a name, a species, three traits and an alter ego.
 
-![The "Buy it as a gift" form on an iPhone 13, filled in for Jamie with a delivery date six days ahead](docs/screenshots/preview-mobile.png)
-On the generated preview, a gift buyer enters the recipient's email, a message, the delivery date and its time zone, then pays $9.
+![The end of the form on an iPhone 13: the "Reveal the secret life" button, then the footer's Privacy and Terms links](docs/screenshots/home-mobile.png)
+On a phone the form ends at the core action's button, and every page ends with the Privacy and Terms links.
 
-![Biscuit's paid preview on desktop: "Your orders" lists the scheduled gift email and the poster sent to the printer, above the unwatermarked cards](docs/screenshots/preview-desktop.png)
-After paying for the gift and a $29 printed poster, the preview is unlocked, the gift email is scheduled for its date and the print order has been placed.
+![Biscuit's free preview on desktop: the wanted poster, the Daily Bark front page and the trading card, watermarked](docs/screenshots/preview-desktop.png)
+Submitting the form makes the result: four cards built around the real photo, watermarked until paid for.
 
-![Home page on an iPhone 13 with the photo chosen](docs/screenshots/home-mobile.png)
-On a phone the same form stacks into one column, and the chosen photo shows before upload.
+![The $9 offer on Biscuit's preview on an iPhone 13: the "Unlock for $9" Buy button and the gift option](docs/screenshots/preview-mobile.png)
+Under the cards, the Buy button ("Unlock for $9") shows because payments are configured. Without Stripe it's replaced by a note.
 
-![The paid wanted-poster share image at Instagram post size](docs/screenshots/share-post-desktop.png)
-The share link returns a 1080×1350 wanted-poster PNG rendered on the server with the pet's photo, without the "free preview" stamp once paid.
+![The free preview's wanted-poster share image at Instagram post size, stamped "free preview"](docs/screenshots/share-post-desktop.png)
+The share link returns a 1080×1350 wanted-poster PNG rendered on the server with the pet's photo and a "make your pet's" footer.
 
-![The paid wanted-poster share image at Stories size on an iPhone 13](docs/screenshots/share-story-mobile.png)
-The 1080×1920 Stories/Reels/TikTok version adds the newspaper headline and the full rap sheet.
+![The same share image at Stories size on an iPhone 13, with the newspaper headline and the full rap sheet](docs/screenshots/share-story-mobile.png)
+The 1080×1920 Stories/Reels/TikTok version adds the front-page headline and the full rap sheet.
 
-_Made by `npm run screenshots` with a drawn sample dog, sample people (`example.com`) and a fictional address. It uses the app's offline stand-ins: no database, no model call, and Stripe, the gift email and the printer are simulated locally, through the app's real signed-webhook path. So the jokes are canned text, no money moves, no email is sent and nothing is printed. The UI font is the sandbox Chromium's fallback; phones and desktops use their own system font._
+_Made by `npm run screenshots` with a drawn sample dog. It runs the dev server with its offline stand-ins: no database, no model call (the jokes are canned demo text), and a local stand-in for Stripe, so no money moves. No visit signal is sent: it isn't a production deployment, and Playwright is an automated browser. The UI font is the sandbox Chromium's fallback; phones and desktops use their own system font. The share images' footer says `localhost:<port>`; in production it shows the real domain._
 
 For pet owners and the friends who buy them gifts, it turns one pet photo into a funny alter-ego bundle (wanted poster with rap sheet, newspaper front page, trading card, bio) for $9–$20 instead of a slow $17–$45 Etsy order.
 

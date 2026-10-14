@@ -17,6 +17,11 @@
 //     sendEmail   — ({ to, toName, subject, text, html }) => Promise<{ id }>, Brevo (email.js); null means no gifts
 //     printOrder  — ({ orderId, address, imageUrl }) => Promise<{ id }>, Prodigi (print.js); null means no prints
 //     renderPrint — (pet, photo) => Promise<{ png, photoShown, photoProblem? }> (bundle.js, loaded on first use)
+//   Go-live (site.js):
+//     siteUrl     — the canonical origin for the search and sharing tags, robots.txt and the sitemap
+//                   ('https://host', from VERCEL_PROJECT_PRODUCTION_URL); null means the request's origin
+//     beacon      — load the RepoHQ visit beacon on the pages (true on the production deployment only)
+//     renderOg    — () => Promise<Uint8Array>, the 1200×630 link-preview PNG (share.js, loaded on first use)
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { csrf } from 'hono/csrf';
@@ -51,7 +56,8 @@ import {
   formProblemPage,
   featureUnavailablePage,
   giftEmail,
-  legalPage,
+  termsPage,
+  privacyPage,
   notFoundPage,
   errorPage,
   STYLES,
@@ -60,6 +66,7 @@ import {
   shareFileName,
   BUNDLE_FILE_NAME,
 } from './views.js';
+import { OG_IMAGE, SIGNAL_ORIGIN, BEACON_SCRIPT, robotsTxt, sitemapXml } from './site.js';
 
 export { BUNDLE_FILE_NAME };
 
@@ -213,6 +220,9 @@ async function readForm(c) {
 const renderShareLazily = async (...args) => (await import('./share.js')).renderSharePng(...args);
 const renderBundleLazily = async (...args) => (await import('./bundle.js')).renderBundle(...args);
 const renderPrintLazily = async (...args) => (await import('./bundle.js')).renderPrintPoster(...args);
+const renderOgLazily = async () => (await import('./share.js')).renderOgPng();
+// The link-preview image never changes within a deployment; a day keeps unfurlers and the CDN from re-rendering it.
+const OG_CACHE = 'public, max-age=86400';
 
 // Error text from drivers can quote a URL with its credentials (Neon echoes a malformed connection string).
 // Database URLs are masked to the end of the line (a malformed one may contain spaces), and any other URL
@@ -247,8 +257,15 @@ export function createApp({
   sendEmail = null,
   printOrder = null,
   renderPrint = renderPrintLazily,
+  siteUrl = null,
+  beacon = false,
+  renderOg = renderOgLazily,
 }) {
   const app = new Hono();
+  // What the pages need to know about the site: the canonical origin and whether to load the visit beacon.
+  const site = (c) => ({ origin: siteUrl ?? new URL(c.req.url).origin, beacon });
+  // The bundle's Buy button shows only when Checkout is configured, like the gift and print forms.
+  const payments = Boolean(checkout);
   // Each M4 product is offered only when everything it needs is configured, so nothing is sold that can't be
   // delivered: a gift needs Stripe, email and the scheduler; a print needs Stripe and the printer.
   const giftsMissing = () =>
@@ -458,6 +475,13 @@ export function createApp({
     return null;
   }
 
+  // Link previews may show the share image straight from this site, so it alone may be embedded cross-origin.
+  // Registered before secureHeaders, which sets same-origin after the route runs, so this runs after it.
+  app.use(OG_IMAGE.path, async (c, next) => {
+    await next();
+    c.res.headers.set('Cross-Origin-Resource-Policy', 'cross-origin');
+  });
+
   app.use(
     secureHeaders({
       contentSecurityPolicy: {
@@ -465,7 +489,8 @@ export function createApp({
         imgSrc: ["'self'", 'blob:', 'data:'],
         styleSrc: ["'self'"],
         scriptSrc: ["'self'"],
-        connectSrc: ["'self'"],
+        // The visit beacon's one off-site request (site.js).
+        connectSrc: ["'self'", SIGNAL_ORIGIN],
         // Chrome and Safari check form-action on every redirect after a form post, so the pay form's 303 to
         // Stripe Checkout would be blocked (the button would silently do nothing) without its origin here.
         formAction: ["'self'", STRIPE_CHECKOUT_ORIGIN],
@@ -485,9 +510,33 @@ export function createApp({
   app.use('/p/*', noindex);
   app.use('/prints/*', noindex);
 
-  app.get('/', (c) => c.html(homePage()));
+  app.get('/', (c) => c.html(homePage({ site: site(c) })));
 
-  app.get('/legal', (c) => c.html(legalPage({ retentionDays: PHOTO_RETENTION_DAYS })));
+  app.get('/terms', (c) => c.html(termsPage({ retentionDays: PHOTO_RETENTION_DAYS, site: site(c) })));
+  app.get('/privacy', (c) => c.html(privacyPage({ retentionDays: PHOTO_RETENTION_DAYS, site: site(c) })));
+  // M3's single terms, refunds and privacy page; old links and receipts keep working.
+  app.get('/legal', (c) => c.redirect('/terms', 301));
+
+  app.get('/robots.txt', (c) =>
+    c.body(robotsTxt(site(c).origin), 200, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': ASSET_CACHE }),
+  );
+  app.get('/sitemap.xml', (c) =>
+    c.body(sitemapXml(site(c).origin), 200, { 'content-type': 'application/xml; charset=utf-8', 'cache-control': ASSET_CACHE }),
+  );
+
+  // Rendered once per instance (~0.5 s of CPU); a failed render is forgotten so the next request retries.
+  let ogImage = null;
+  app.get(OG_IMAGE.path, async (c) => {
+    ogImage ??= renderOg().catch((err) => {
+      ogImage = null;
+      throw err;
+    });
+    return c.body(await ogImage, 200, { 'content-type': 'image/png', 'cache-control': OG_CACHE });
+  });
+
+  app.get('/beacon.js', (c) =>
+    c.body(BEACON_SCRIPT, 200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': ASSET_CACHE }),
+  );
 
   app.get('/styles.css', (c) =>
     c.body(STYLES, 200, { 'content-type': 'text/css; charset=utf-8', 'cache-control': ASSET_CACHE }),
@@ -561,6 +610,8 @@ export function createApp({
         orders: await store.listOrders(pet.slug),
         gift: giftOffer(c, pet),
         prints: !printsMissing(),
+        payments,
+        site: site(c),
       }),
     );
   });
@@ -609,7 +660,7 @@ export function createApp({
     if (!pet.paidAt) {
       return wantsJson(c)
         ? c.json({ error: 'The bundle unlocks once it is paid for.', checkout: '/checkout' }, 402)
-        : c.html(paymentRequiredPage(pet), 402);
+        : c.html(paymentRequiredPage(pet, { payments, site: site(c) }), 402);
     }
     const headers = {
       'content-type': 'application/zip',
@@ -706,7 +757,7 @@ export function createApp({
     const { pet, problem } = await lookup(input.slug);
     if (problem) return problemResponse(c, problem);
     if (!pet.paidAt) {
-      return failWith(c, 402, 'The printed poster comes with the paid bundle. Unlock the bundle first.', () => paymentRequiredPage(pet, { print: true }));
+      return failWith(c, 402, 'The printed poster comes with the paid bundle. Unlock the bundle first.', () => paymentRequiredPage(pet, { print: true, payments, site: site(c) }));
     }
     const missing = printsMissing();
     if (missing) {
@@ -903,7 +954,7 @@ export function createApp({
     const { pet, problem } = await lookup(input.slug);
     if (problem) return problemResponse(c, problem);
     const used = () => failWith(c, 409, "This preview's one rewrite is already used.", () => rewriteUsedPage(pet));
-    if (!pet.paidAt) return failWith(c, 402, 'The rewrite comes with the paid bundle.', () => paymentRequiredPage(pet));
+    if (!pet.paidAt) return failWith(c, 402, 'The rewrite comes with the paid bundle.', () => paymentRequiredPage(pet, { payments, site: site(c) }));
     if (pet.regeneratedAt) return used();
 
     let character;

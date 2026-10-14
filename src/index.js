@@ -12,6 +12,9 @@
 //   BREVO_API_KEY + EMAIL_FROM  Brevo v3 API key and its verified sender address; without both, no gifts (M4)
 //   PRODIGI_API_KEY        Prodigi Print API key; without it, no printed posters (M4)
 //   PRODIGI_ENV            'live' sends print orders to Prodigi's live API; anything else uses its sandbox
+// Set by Vercel itself (go-live):
+//   VERCEL_ENV             'production' loads the RepoHQ visit beacon; previews and local runs never send it
+//   VERCEL_PROJECT_PRODUCTION_URL  the production domain, used for canonical URLs, robots.txt and the sitemap
 import { neon } from '@neondatabase/serverless';
 import { createApp } from './app.js';
 import { createChatCompletion } from './character.js';
@@ -19,6 +22,7 @@ import { createBrevoSender } from './email.js';
 import { createStripeCheckout } from './payments.js';
 import { createProdigiPrinter } from './print.js';
 import { PgStore } from './store.js';
+import { siteUrlFromEnv } from './site.js';
 
 export const DEFAULT_LLM_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/openai';
 export const DEFAULT_LLM_MODEL = 'gemini-flash-latest';
@@ -93,6 +97,8 @@ export function depsFromEnv(env, { fetch = globalThis.fetch } = {}) {
     printOrder: env.PRODIGI_API_KEY
       ? createProdigiPrinter({ apiKey: env.PRODIGI_API_KEY, environment: env.PRODIGI_ENV === 'live' ? 'live' : 'sandbox', fetch })
       : null,
+    siteUrl: siteUrlFromEnv(env),
+    beacon: env.VERCEL_ENV === 'production',
   };
 }
 

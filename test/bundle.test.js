@@ -10,6 +10,7 @@ import {
   createPreview,
   petForm,
   payFor,
+  fakeCheckout,
   fakeWebhookSecret,
   petRecord,
   validCharacter,
@@ -53,7 +54,7 @@ async function paidPreview(options = {}, form = petForm()) {
 describe('before payment (M3 exit criterion 1)', () => {
   test('GET bundle.zip returns 402 with a page offering the $9 checkout, and renders nothing', async () => {
     const { renderBundle, seen } = countingRenderer();
-    const { app } = makeApp({ renderBundle });
+    const { app } = makeApp({ renderBundle, checkout: fakeCheckout().checkout });
     const slug = await createPreview(app);
     const res = await app.request(`/p/${slug}/bundle.zip`);
     assert.equal(res.status, 402);

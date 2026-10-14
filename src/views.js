@@ -1,11 +1,12 @@
 // HTML, CSS and the browser script. This is the only place user and model text meets markup:
 // every value goes through Hono's `html` tag, which escapes & < > " ' — never `raw()` on data.
 // User text only ever lands in element text or quoted attributes, never in <script>, <style> or URLs.
-import { html } from 'hono/html';
+import { html, raw } from 'hono/html';
 import { ALTER_EGOS, SPECIES, findAlterEgo } from './character.js';
 import { MAX_NAME_LENGTH, MAX_TRAIT_LENGTH, MAX_GIFT_NAME_LENGTH, MAX_GIFT_MESSAGE_LENGTH, US_STATES, isTimeZone } from './input.js';
 import { PRICE_LABEL, PRINT_PRICE_LABEL, priceLabel } from './payments.js';
 import { PRINT_SIZE_LABEL } from './print.js';
+import { PUBLIC_PAGES, OG_IMAGE, ISSUES_URL, SIGNAL_ENDPOINT, SITE_NAME, softwareApplication } from './site.js';
 
 // Enough repeats to tile the tallest card once rotated.
 const WATERMARK_REPEATS = 36;
@@ -33,10 +34,41 @@ export const SPECIES_STYLE = {
   other: { option: 'Other', label: 'Pet', paper: 'The Critter Chronicle', reward: 'a lifetime supply of snacks' },
 };
 
+// The search and sharing tags of a public page (PUBLIC_PAGES): description, canonical URL, Open Graph and
+// Twitter cards with the 1200×630 image, and SoftwareApplication JSON-LD. JSON-LD is a data block, not
+// script, so the CSP doesn't block it; it holds only fixed text and the origin, and `<` is escaped so it
+// can never close the element.
+function seoTags(page, origin) {
+  const url = `${origin}${page.path}`;
+  const image = `${origin}${OG_IMAGE.path}`;
+  const jsonLd = JSON.stringify(softwareApplication(origin)).replace(/</g, '\\u003c');
+  return html`<meta name="description" content="${page.description}">
+<link rel="canonical" href="${url}">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="${SITE_NAME}">
+<meta property="og:title" content="${page.title}">
+<meta property="og:description" content="${page.description}">
+<meta property="og:url" content="${url}">
+<meta property="og:image" content="${image}">
+<meta property="og:image:width" content="${OG_IMAGE.width}">
+<meta property="og:image:height" content="${OG_IMAGE.height}">
+<meta property="og:image:alt" content="${OG_IMAGE.alt}">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="${page.title}">
+<meta name="twitter:description" content="${page.description}">
+<meta name="twitter:image" content="${image}">
+<meta name="twitter:image:alt" content="${OG_IMAGE.alt}">
+<script type="application/ld+json">${raw(jsonLd)}</script>`;
+}
+
+const siteFooter = () => html`<footer class="site-foot"><a href="/privacy">Privacy</a> · <a href="/terms">Terms</a></footer>`;
+
 // `referrer` relaxes the site-wide no-referrer header for one page. The preview needs `same-origin`: under
 // no-referrer, browsers send `Origin: null` on its report form, and older ones (no Sec-Fetch-Site, e.g.
 // Safari before 16.4) would fail the CSRF check. same-origin still never sends the slug to another site.
-function layout({ title, robots, body, script = false, referrer = null }) {
+// `site` is { origin, beacon } from app.js: `page` (a PUBLIC_PAGES entry) adds the search and sharing tags,
+// and `beacon` loads the visit beacon (production only). Pages without `site` get neither.
+function layout({ title, robots, body, script = false, referrer = null, page = null, site = null }) {
   return html`<!doctype html>
 <html lang="en">
 <head>
@@ -44,17 +76,20 @@ function layout({ title, robots, body, script = false, referrer = null }) {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="${robots}">
 ${referrer ? html`<meta name="referrer" content="${referrer}">` : ''}
-<title>${title}</title>
+<title>${page?.title ?? title}</title>
+${page && site ? seoTags(page, site.origin) : ''}
 <link rel="stylesheet" href="/styles.css">
 ${script ? html`<script src="/upload.js" defer></script>` : ''}
+${site?.beacon ? html`<script src="/beacon.js" defer></script>` : ''}
 </head>
 <body>
 ${body}
+${siteFooter()}
 </body>
 </html>`;
 }
 
-export function homePage() {
+export function homePage({ site } = {}) {
   const body = html`<main class="home">
   <header class="hero">
     <p class="brand">alterpaw</p>
@@ -107,9 +142,9 @@ export function homePage() {
     <p id="form-status" class="status" role="status" aria-live="polite"></p>
     <noscript><p class="status error">alterpaw needs JavaScript to shrink your photo before it uploads.</p></noscript>
   </form>
-  <footer class="foot">Free preview. Your photo stays on an unlisted page that search engines are told not to index. ${PRICE_LABEL} unlocks the clean, high-res bundle. <a href="/legal">Terms, refunds and privacy</a></footer>
+  <footer class="foot">Free preview. Your photo stays on an unlisted page that search engines are told not to index. ${PRICE_LABEL} unlocks the clean, high-res bundle.</footer>
 </main>`;
-  return layout({ title: "alterpaw — your pet's secret life", robots: 'index, follow', body, script: true });
+  return layout({ robots: 'index, follow', body, script: true, page: PUBLIC_PAGES.home, site });
 }
 
 // Only unpaid previews are watermarked; the bundle unlocks clean cards.
@@ -273,7 +308,7 @@ function zoneOptions(selected) {
 function giftForm(pet, gift) {
   return html`<details class="gift">
   <summary>Or buy it as a gift: we email it to them on the day you choose (${priceLabel('gift')})</summary>
-  <form method="post" action="/gift" class="gift-form">
+  <form method="post" action="/gift" class="gift-form" data-checkout>
     <input type="hidden" name="slug" value="${pet.slug}">
     <div class="row">
       <label class="field"><span class="field-label">Their email</span>
@@ -299,7 +334,9 @@ function giftForm(pet, gift) {
 
 // The $9 offer: a plain form to /checkout, which answers with a redirect to Stripe Checkout.
 // `confirming` is set when the buyer is back from Stripe but the webhook hasn't marked the preview paid yet.
-function offerSection(pet, { confirming = false, gift = null } = {}) {
+// `payments` is false until Stripe is configured: then there's no Buy button to lead to a 503, only a note.
+// Pay forms carry `data-checkout`, which the visit beacon counts on submit.
+function offerSection(pet, { confirming = false, gift = null, payments = false } = {}) {
   return html`<section class="unlock" aria-labelledby="unlock-title">
   <h2 id="unlock-title">Get the clean bundle: ${PRICE_LABEL}</h2>
   ${confirming
@@ -310,12 +347,14 @@ function offerSection(pet, { confirming = false, gift = null } = {}) {
     <li>A printable PDF with all four</li>
     <li>One free rewrite of the jokes if they don't land</li>
   </ul>
-  <form method="post" action="/checkout">
+  ${payments
+    ? html`<form method="post" action="/checkout" data-checkout>
     <input type="hidden" name="slug" value="${pet.slug}">
     <button type="submit" class="pay">Unlock for ${PRICE_LABEL}</button>
-  </form>
+  </form>`
+    : html`<p class="notice">Payments aren't switched on yet, so the bundle can't be bought today. The free preview and the share images work now.</p>`}
   ${gift ? giftForm(pet, gift) : ''}
-  <p class="fine">One-time payment through Stripe, no account. <a href="/legal">Terms, refunds and privacy</a></p>
+  <p class="fine">${payments ? 'One-time payment through Stripe, no account. ' : ''}<a href="/terms">Terms and refunds</a> · <a href="/privacy">Privacy</a></p>
 </section>`;
 }
 
@@ -326,7 +365,7 @@ function printSection(pet) {
   <p>The wanted poster on ${PRINT_SIZE_LABEL} matte art paper, printed and shipped by our print partner. US addresses only; shipping included.</p>
   <details class="print-details">
     <summary>Order the printed poster</summary>
-    <form method="post" action="/print" class="address-form">
+    <form method="post" action="/print" class="address-form" data-checkout>
       <input type="hidden" name="slug" value="${pet.slug}">
       <label class="field"><span class="field-label">Full name</span>
         <input type="text" name="name" required maxlength="60" autocomplete="shipping name"></label>
@@ -406,7 +445,11 @@ function bundleSection(pet, retentionDays) {
 // Policy numbers and lists (retention, report reasons) come from app.js, the one place they're defined.
 // `checkoutReturn` is true on Stripe's success URL. M4: `orders` are the preview's paid orders, `gift` the gift
 // form's settings (null when gifts are off or it's too late for one), `prints` whether the poster is on offer.
-export function previewPage(pet, { reportReasons, retentionDays, checkoutReturn = false, orders = [], gift = null, prints = false }) {
+// Go-live: `payments` whether the bundle can be bought (Stripe configured), `site` as in layout().
+export function previewPage(
+  pet,
+  { reportReasons, retentionDays, checkoutReturn = false, orders = [], gift = null, prints = false, payments = false, site = null },
+) {
   const style = SPECIES_STYLE[pet.species] ?? SPECIES_STYLE.other;
   const ego = findAlterEgo(pet.alterEgo) ?? { label: pet.alterEgo };
   const body = html`<main class="preview">
@@ -422,13 +465,13 @@ export function previewPage(pet, { reportReasons, retentionDays, checkoutReturn 
     ${tradingCard(pet, style, ego)}
     ${bioCard(pet, style, ego)}
   </section>
-  ${pet.paidAt ? bundleSection(pet, retentionDays) : offerSection(pet, { confirming: checkoutReturn, gift })}
+  ${pet.paidAt ? bundleSection(pet, retentionDays) : offerSection(pet, { confirming: checkoutReturn, gift, payments })}
   ${pet.paidAt && prints ? printSection(pet) : ''}
   ${shareSection(pet, retentionDays)}
   <section class="cta">${makeYoursLink()}</section>
   <footer class="foot">${reportForm(pet, reportReasons)}</footer>
 </main>`;
-  return layout({ title: `The secret life of ${pet.name} — alterpaw`, robots: 'noindex, nofollow', body, referrer: 'same-origin' });
+  return layout({ title: `The secret life of ${pet.name} — alterpaw`, robots: 'noindex, nofollow', body, referrer: 'same-origin', site });
 }
 
 function messagePage(title, heading, paragraphs) {
@@ -458,16 +501,16 @@ export const reportThanksPage = () =>
   ]);
 
 // 402 for the bundle before payment: the offer itself, so the page is one click from paying. `print` is set when
-// it answers a printed-poster order, which comes after the bundle.
-export function paymentRequiredPage(pet, { print = false } = {}) {
+// it answers a printed-poster order, which comes after the bundle. `payments` and `site` as in previewPage().
+export function paymentRequiredPage(pet, { print = false, payments = false, site = null } = {}) {
   const body = html`<main class="message">
   <a class="brand" href="/">alterpaw</a>
   <h1>The clean bundle is ${PRICE_LABEL}</h1>
   <p>${print ? 'The printed poster is offered once the bundle for this preview is paid for.' : 'The download unlocks once the bundle for this preview is paid for.'}</p>
-  ${offerSection(pet)}
+  ${offerSection(pet, { payments })}
   <p><a href="/p/${pet.slug}">Back to the preview</a></p>
 </main>`;
-  return layout({ title: 'Unlock the bundle — alterpaw', robots: 'noindex, nofollow', body, referrer: 'same-origin' });
+  return layout({ title: 'Unlock the bundle — alterpaw', robots: 'noindex, nofollow', body, referrer: 'same-origin', site });
 }
 
 // Answers to a rewrite form post that didn't rewrite. Both lead back to the preview.
@@ -558,19 +601,25 @@ export const paymentsUnavailablePage = ({ retry }) =>
       : ["Payments aren't switched on yet. Nothing was charged. Please come back soon."],
   );
 
-// Terms, refunds and privacy on one page: what Stripe asks a merchant's site to show, and what a buyer
-// needs before paying. Keep it in step with the code (retention, processors, what the model receives).
-export function legalPage({ retentionDays }) {
+// /terms and /privacy (they replace M3's single /legal page, which now redirects to /terms): what Stripe asks a
+// merchant's site to show, and what a buyer needs before paying. Keep them in step with the code (retention,
+// processors, what the model receives, the visit beacon in site.js). `site` as in layout().
+const LEGAL_UPDATED = 'October 14, 2026';
+
+const contactSection = () => html`<h2 id="contact">Contact</h2>
+  <p>Questions, problems or requests: open an issue at <a href="${ISSUES_URL}">${ISSUES_URL.replace('https://', '')}</a>. Issues are public, so don't post your preview's link, an email address or a street address there. To have a preview removed, use "Report this page" on it, or reply to your Stripe receipt if you bought something.</p>`;
+
+export function termsPage({ retentionDays, site = null }) {
   const body = html`<main class="message legal">
   <a class="brand" href="/">alterpaw</a>
-  <h1>Terms, refunds and privacy</h1>
-  <p class="fine">Last updated October 14, 2026.</p>
+  <h1>Terms</h1>
+  <p class="fine">Last updated ${LEGAL_UPDATED}. How we handle your data is on the <a href="/privacy">privacy page</a>.</p>
 
-  <h2 id="terms">Terms</h2>
+  <h2 id="service">The service</h2>
   <p>alterpaw turns one photo of your pet and a few details into a funny, made-up "secret life": a wanted poster, a newspaper front page, a trading card and a character bio. The text is written by an AI model. It is parody, not fact.</p>
   <p>Upload only a photo of a pet that you have the right to use, and no photos of people. Previews that break these rules or are reported by several people may be taken down.</p>
   <p>The preview is free and watermarked. The bundle costs ${PRICE_LABEL} (US dollars), paid once through Stripe, for one preview. It unlocks the four cards as high-res images and a printable PDF without the watermark, plus one rewrite of the text. It is delivered at once on the preview page, for your personal use, including printing and sharing.</p>
-  <p>Previews and their downloads are available until the photo is deleted, ${retentionDays} days after upload, so download the bundle before then. The service is provided as is.</p>
+  <p>Previews and their downloads are available until the photo is deleted, ${retentionDays} days after upload, so download the bundle before then.</p>
   <p><b>Gifts.</b> You can buy the bundle as a gift (${priceLabel('gift')}) for a pet whose photo you have the right to use. We email the recipient one message with the link on the delivery date you choose, in the time zone you choose, and the link works until the photo is deleted. You can pick a date up to about a week before that. If the preview is taken down before the date, the email isn't sent and you get a refund.</p>
   <p><b>Printed posters.</b> Once the bundle is paid for, you can order the wanted poster printed on ${PRINT_SIZE_LABEL} matte art paper for ${PRINT_PRICE_LABEL}, shipping included, to an address in the United States. It's printed and shipped by our print partner, usually within two weeks.</p>
 
@@ -578,16 +627,52 @@ export function legalPage({ retentionDays }) {
   <p>If the bundle doesn't download, or you're unhappy with it, ask within 14 days of paying and you'll get a full refund. Reply to your Stripe receipt to ask.</p>
   <p>If a printed poster arrives damaged or misprinted, or doesn't arrive, reply to your Stripe receipt within 30 days of ordering and we'll reprint it or refund it.</p>
 
-  <h2 id="privacy">Privacy</h2>
+  <h2 id="no-warranty">No warranty</h2>
+  <p>alterpaw is provided as is and as available, without warranty of any kind, express or implied, including fitness for a particular purpose. The jokes are written by a machine and may miss, repeat or offend, and the site may be down or lose a preview. As far as the law allows, we aren't liable for any indirect or consequential loss, and the most we owe you for anything is a refund of what you paid for the order in question. The refunds above still apply.</p>
+
+  <h2 id="changes">Changes</h2>
+  <p>If these terms change, the date at the top changes too. What you have already bought stays under the terms you bought it under.</p>
+
+  ${contactSection()}
+  <p>${makeYoursLink()}</p>
+</main>`;
+  return layout({ robots: 'index, follow', body, page: PUBLIC_PAGES.terms, site });
+}
+
+export function privacyPage({ retentionDays, site = null }) {
+  const signalHost = new URL(SIGNAL_ENDPOINT).host;
+  const body = html`<main class="message legal">
+  <a class="brand" href="/">alterpaw</a>
+  <h1>Privacy</h1>
+  <p class="fine">Last updated ${LEGAL_UPDATED}. The rules for using the site are in the <a href="/terms">terms</a>.</p>
+
+  <h2 id="what-we-store">What we store</h2>
   <p>We store your pet's photo, name, species, traits and alter ego, the generated text and the time of upload. The photo is deleted ${retentionDays} days after upload; the text stays so the link can say it has expired.</p>
   <p>Payments are handled by Stripe: we never see your card details. We keep the Stripe session id and the time of payment, to match payments to previews and to handle refunds.</p>
   <p>For a gift we store the recipient's email address and name, your name, your message and the delivery date, and send the email through Brevo, which receives those to deliver it. For a printed poster we store the shipping address and send it, with the poster, to our print partner Prodigi, which prints and ships it. We erase these details ${retentionDays} days after the order, along with the photo; Stripe, Brevo and Prodigi keep their own records under their own policies.</p>
+  <p>When someone reports a page we keep a short hash of their network address for that page, never the address itself, and delete it after ${retentionDays} days.</p>
+  <p>No accounts and no ads. Previews are unlisted and search engines are told not to index them, but anyone with the link can see one. To have a preview deleted sooner, reply to your Stripe receipt or use "Report this page" on it.</p>
+
+  <h2 id="who-processes-it">Who processes it</h2>
   <p>Text is written by Google's Gemini API. It receives the name, species, traits and alter ego, never the photo. On its free tier Google may use that text to improve its products, so don't put anything private in those fields.</p>
-  <p>The database is hosted by Neon and the site by Vercel. When someone reports a page we keep a short hash of their network address for that page, never the address itself, and delete it after ${retentionDays} days.</p>
-  <p>No accounts, no ads, no tracking cookies. Previews are unlisted and search engines are told not to index them, but anyone with the link can see one. To have a preview deleted sooner, reply to your Stripe receipt or use "Report this page" on it.</p>
+  <p>The database is hosted by Neon and the site by Vercel, whose servers see each request (your IP address and browser) to serve it.</p>
+
+  <h2 id="cookies">Cookies</h2>
+  <p>alterpaw sets no cookies. The visit counter below keeps a flag or two in your browser's own storage (sessionStorage and localStorage, not cookies) so it counts you once; the flags hold no ID. Stripe's checkout page is on Stripe's own site, under Stripe's cookie policy.</p>
+
+  <h2 id="visit-counter">The visit counter</h2>
+  <p>So the maker can see whether anyone uses alterpaw, the live site sends three anonymous signals to RepoHQ (${signalHost}), the maker's own project dashboard:</p>
+  <ul>
+    <li><code>visit</code>: once per browser session, when you open a page;</li>
+    <li><code>activate</code>: once per browser, the first time you make a preview;</li>
+    <li><code>checkout</code>: each time you press a button to pay (Unlock, Buy it as a gift, Order the poster).</li>
+  </ul>
+  <p>Each signal says only "alterpaw", which of the three it is and, if you arrived from another website, that page's address. Never your preview's link, your photo, what you typed or any ID, and no cookies. Like any web request it reaches RepoHQ with your IP address and browser type. Nothing is sent from automated browsers or from test deployments. To switch it off in your browser, set <code>repohq:notrack</code> in this site's localStorage to any value (or use a content blocker).</p>
+
+  ${contactSection()}
   <p>${makeYoursLink()}</p>
 </main>`;
-  return layout({ title: 'Terms, refunds and privacy — alterpaw', robots: 'index, follow', body });
+  return layout({ robots: 'index, follow', body, page: PUBLIC_PAGES.privacy, site });
 }
 
 export function notFoundPage() {
@@ -724,6 +809,12 @@ function uploadScript() {
           })
           .then(function (body) {
             if (res.ok && body.url) {
+              // The core action worked: tell the visit beacon (beacon.js, loaded in production only).
+              try {
+                document.dispatchEvent(new CustomEvent('alterpaw:activate'));
+              } catch (e) {
+                // No beacon, or an old browser: nothing to count.
+              }
               window.location.assign(body.url);
               return;
             }
@@ -877,6 +968,11 @@ input[type=file] { font: inherit; }
 .message { max-width: 560px; margin: 4rem auto; padding: 0 1.25rem; }
 .legal { max-width: 720px; line-height: 1.55; }
 .legal h2 { margin: 2rem 0 .4rem; font-size: 1.3rem; }
+.legal code { font-size: .9em; background: var(--paper); border-radius: 4px; padding: .05em .3em; }
+
+/* The footer on every page */
+.site-foot { max-width: 720px; margin: 0 auto; padding: 1rem 1.25rem 2.5rem; text-align: center; color: var(--muted); font-size: .9rem; }
+.site-foot a { color: var(--muted); }
 .problems { color: #b91c1c; font-weight: 600; line-height: 1.5; }
 
 /* M4: gifts, printed posters and the orders box */
