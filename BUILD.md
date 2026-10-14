@@ -2,6 +2,159 @@
 
 ## Plan
 
+Milestone: **M4 — Gift flow and print**, the one milestone of this MVP run. M1–M3 stay green. This was built
+non-interactively, so every question the gstack frameworks would ask a person is answered here, with the reason.
+
+Exit criteria (ROADMAP.md):
+1. A gift order with a delivery date in the future sends nothing before that date and one email on it.
+2. A print order creates one print-on-demand order with the stored shipping address and rejects an incomplete
+   address with 400.
+
+**Where this run started.** M4 was already in the repo. The previous run built it, and it was committed with
+M2–M3 (`d07c662`). That includes:
+- `src/email.js` (Brevo) and `src/print.js` (Prodigi);
+- the `orders` table;
+- `POST /gift`, `POST /print`, `GET /jobs/deliver-gifts` and `GET /prints/:id/poster.png`;
+- `test/gift.test.js`, `test/print.test.js` and `test/email.test.js`.
+
+After `npm ci`, `npm test` passed 391/391. That run's plan is kept below as "M4 — first build".
+
+Three things were unfinished:
+- The M4 review stopped after Pass 1: no Pass 2, and nothing "left open".
+- `.provision` was missing; the pipeline had consumed it.
+- One test pinned the gift job's schedule but only checked whole-hour time zones.
+
+So this run doesn't rebuild M4. It re-verifies each exit criterion against how production will actually behave,
+writes a failing test for every real gap, and fixes it.
+
+### Step 0: Scope challenge (M4, second pass)
+
+1. **What existing code already solves:** all of M4 (see the first build's Step 0 below). There's no parallel
+   flow to build. Gifts and prints already reuse:
+   - M3's Checkout and signed webhook;
+   - the `/` upload form, for the recipient's pet;
+   - M2's cron pattern, for the gift job;
+   - the wanted-poster layout, for the print file.
+2. **Minimum change that meets the exit criteria.**
+   - In:
+     - **Re-verify each criterion where a passing test could still fail in production.** For criterion 1:
+       the real cron's timing against every time zone. For criterion 2: the Prodigi and Brevo contracts,
+       and the Neon HTTP driver vs. PGlite.
+     - **A failing test, then the fix, for each real gap.** Found:
+       - the gift run's hour (see Search check);
+       - from the review: one batch of 50 gifts per run, every Brevo 400 treated as permanent, one gift's
+         database error aborting the run, invisible-only address fields passing as filled in, and three
+         smaller ones (see Review).
+     - **Finish the M4 review:** Pass 2, plus what's left open (see Review).
+     - **Refresh the rest:** write `.provision` again, re-run the screenshots, update BUILD.md and README.
+   - Deliberately **not** in this run: everything outside M4's two criteria that's already listed in What's
+     left:
+     - rate limits;
+     - the non-pet photo check;
+     - the share-rate counter;
+     - email to David on a third report;
+     - a custom email domain;
+     - shipping outside the US;
+     - Stripe Tax;
+     - the commercial-use host decision.
+
+     The roadmap's "only if M3 sells" gate stays a switch: the gift and print forms appear only once their
+     keys exist.
+   - **Before charging.** There's no `REVENUE.md`. `/legal` already covers gifts, prints, the recipient's
+     email, the shipping address, Brevo and Prodigi.
+3. **Complexity check.** Five code files change, under the 8-file smell line:
+   - `vercel.json`: the cron hour;
+   - `src/app.js`: the gift job's batch loop and per-gift error handling;
+   - `src/email.js`: which Brevo 400s are permanent;
+   - `src/input.js`: invisible characters, well-formed text and the zone cache key;
+   - `src/views.js`: one sentence.
+
+   Three test files change too. There are no new modules, classes or services. Each fix is local to the
+   function that had the gap.
+4. **Search check** (WebSearch available):
+   - **[Layer 1]** Vercel's cron docs: on Hobby a cron runs at most once a day, in UTC. It fires *anywhere
+     from H:00:00 to H:59:59* of its hour ("0 1 * * *" triggers between 1:00 and 1:59), to spread load. The
+     limit is 100 crons per project. Sources: [Managing Cron Jobs](https://vercel.com/docs/cron-jobs/manage-cron-jobs),
+     [Usage & Pricing for Cron Jobs](https://vercel.com/docs/cron-jobs/usage-and-pricing).
+   - **[Layer 1]** Brevo answers a bad request with 400 and `{ code, message }`. A recipient it won't take
+     reads `"email is not valid in to"` (quoted in a public bug report:
+     [drupal.org #3546064](https://www.drupal.org/project/brevo/issues/3546064)). An unverified sender is
+     also refused, per its help page
+     ([Troubleshooting issues with Brevo SMTP](https://help.brevo.com/hc/en-us/articles/115000188150-Troubleshooting-issues-with-Brevo-SMTP),
+     [Sender creation and management](https://developers.brevo.com/docs/sender-creation-and-management)).
+     That's the basis for the review's Brevo 400 fix.
+   - **[EUREKA] One daily run is only "on the date" if no zone's midnight falls inside its hour.** A gift is
+     due at local midnight. If that midnight lands inside the run's hour, a run that fires early in the hour
+     misses the gift, and the next run is a day later, which can be past the date.
+     - **What the first build missed.** It checked whole-hour offsets only. At 14:00 UTC it misses:
+       - **Australia/Darwin** (UTC+9:30) every day of the year;
+       - **Adelaide and Broken Hill** in their winter.
+     - **The check.** I simulated both edges of the run's hour against all 418 IANA zones Node knows, for
+       every date from 2026-10-14 to 2027-10-13. **16:00 UTC is the only one of the 24 hours with no misses.**
+       Every other hour misses somewhere: half- and quarter-hour zones, or a whole-hour zone on its
+       DST-change day, when midnight lands on the hour's edge.
+     - **The move.** The run goes from 14:00 to 16:00 UTC. For the US buyers the prices and shipping target,
+       that's around noon in New York (11 am in winter) and 9 am in Los Angeles. Asia-Pacific gets the
+       email overnight, still on the date.
+   - **[Layer 1]** Everything else the first build searched still holds: Prodigi's `idempotencyKey`, Brevo's
+     v3 send API and free plan, and `Intl.DateTimeFormat` for zone offsets.
+5. **TODOS cross-reference.** There's no `TODOS.md`. The M3 and M4 "left open" items are unchanged, and
+   none of them blocks an M4 exit criterion.
+6. **Completeness check.** The new tests cover the exact production behaviour, not a sample:
+   - the run's actual hour, read from `vercel.json`;
+   - both edges of Vercel's hour;
+   - every zone, every day for a year;
+   - an end-to-end gift through the app in ten odd-offset zones, with runs at the top of the hour, at its
+     end, and alternating.
+7. **Distribution check.** It's still a web service. The only deploy-side change is the cron expression in
+   `vercel.json`, which the next production deploy picks up.
+
+### 1. Architecture review (M4, second pass)
+
+The design is unchanged. The data flow diagram, boundaries and failure scenarios are under "M4 — first build"
+below, and they were re-read against the code. Each new codepath or integration point, and how it fails in
+production:
+
+| Path | Realistic production failure | Covered? |
+|---|---|---|
+| Vercel Cron → `/jobs/deliver-gifts` | Vercel fires early in the hour, before a half-hour zone's midnight, and the gift goes a day late. | **Fixed in this run** (16:00 UTC), with a test over every zone. |
+| `/jobs/deliver-gifts` → Brevo | Brevo is down or rate-limited: the claim is released and the next daily run retries, so the email is a day late. | Yes, tested. A gift for *today* also retries through Stripe's webhook retries. **Second pass:** the run now stops after three failures in a row instead of waiting on every gift's timeout. |
+| `/jobs/deliver-gifts` on a busy day | More gifts are due than one batch (50), and the rest wait until tomorrow. | **Fixed in this run:** batches until none are due (up to Brevo's free 300 a day), tested with 121. |
+| Brevo 400 | `EMAIL_FROM` isn't verified in Brevo, so every send is a 400, which used to cancel every gift due that day for good. | **Fixed in this run:** only a 400 that names the recipient cancels; any other is retried. |
+| Webhook → Prodigi | Prodigi times out after creating the order: a 500, and Stripe retries. The same `idempotencyKey` returns the first order (`AlreadyExists`), so there's one print. | Yes, tested with a fake that dedupes like Prodigi. |
+| Prodigi → `/prints/:id/poster.png` | The preview was taken down between payment and the fetch: 410, Prodigi reports an asset error, and the order is visible in SQL for a refund. | Yes, tested (410). Refund by hand (Operations). |
+| Neon HTTP driver | Each query is its own HTTP request, so there's no session and no multi-statement transaction. Every M4 state change is already one statement (the claim is a single `UPDATE … WHERE id IN (SELECT … FOR UPDATE SKIP LOCKED)`). | Yes. The SQL runs on PGlite in tests; the driver itself is unverified until deploy. |
+
+**Security architecture** is unchanged and re-checked in the Review below:
+- an email goes only to a **paid** gift's recipient;
+- both forms are same-site only;
+- the print file needs a 128-bit order id and a paid order on a live preview;
+- keys travel only in headers.
+
+### 3. Test review (M4, second pass)
+
+The first build's tests stay as they are. This run adds tests where a criterion could pass in tests and fail
+in production:
+
+| Exit criterion | New in this run | Failed before the fix? |
+|---|---|---|
+| 1. Nothing before the date, one email on it | `gift.test.js`: **the run's hour from `vercel.json` lands on the date in every IANA zone, every day for a year**, at both edges of the hour. | Yes: Darwin, Adelaide and Broken Hill. |
+| 1. | `gift.test.js`: **an end-to-end gift in 10 odd-offset zones** (Darwin, Eucla, Kolkata, Kathmandu, Chatham, St John's, Marquesas, Kiritimati, Pago Pago, New York). Runs go at the top of the hour, the end of the hour, and alternating. It's exactly one email each time, on the date. | Yes: Darwin with early-then-late runs. |
+| 1. | `gift.test.js`: the Tokyo, Los Angeles and New York runs now use the scheduled hour, not a hard-coded 14:00. | Tokyo, yes. |
+| 1. | `gift.test.js`: **121 gifts due on one day, one of which keeps failing** → 120 emailed in that day's run, the stuck one tried once. | Yes: the run stopped after 50. |
+| 1. | `gift.test.js`: **an email outage on a 60-gift day** → at most 5 tries, nothing left claimed; the re-run sends 60, once each. | Yes: 50 tries, then 50 sent. |
+| 1. | `gift.test.js`: **a database error on one gift** fails only that gift; the rest go, and it goes on a re-run. If recording "sent" fails after the email went, a re-run that day doesn't send it again. | Yes: the run answered 500. |
+| 1. | `email.test.js`: **only a Brevo 400 about the recipient is permanent**; an unverified-sender 400 is retried, so it can't cancel a day of paid gifts. | Yes. |
+| 1. | `gift.test.js`: "Your orders" tells the truth about a cancelled gift. | Yes. |
+| 2. Incomplete address → 400 | `print.test.js`: a JSON field that isn't text (null, a number, a list, an object) counts as missing: 400 naming it, nothing stored or charged. | No. It pins behaviour that was already right. |
+| 2. | `print.test.js`: **a name, street or city made only of invisible characters** (zero-width space, Hangul filler, word joiner) → 400 naming it. | Yes: they passed as filled in. |
+| 2. | `print.test.js`: **on Postgres (PGlite), an address with a broken UTF-16 character** is stored, not a 500. | Yes: jsonb refused it. |
+| Both | `gift.test.js`: invisible-only and broken text on the gift form; 256 casings of a zone name add at most one cached formatter. | Yes. |
+
+### Earlier plans (kept for reference)
+
+#### M4 — Gift flow and print (first build, previous run)
+
 Milestone: **M4 — Gift flow and print** (3 of 3 in this MVP run: M2 and M3 are done). M1–M3 stay green.
 This was built non-interactively. Every question the gstack frameworks would ask a person is answered here,
 with the reason.
@@ -18,7 +171,7 @@ are. Nothing half-works in production while David decides whether M3 sold. There
 "Before charging" for M4 means the terms, refunds and privacy page must cover gifts, prints, the new data
 (a recipient's email, a shipping address) and the new processors (Brevo, Prodigi), so `/legal` is updated.
 
-### Step 0: Scope challenge (M4)
+#### Step 0: Scope challenge (M4, first build)
 
 1. **What existing code already solves.**
    - **Payments.** Stripe Checkout, the signed webhook and its replay and amount checks are all in M3.
@@ -106,7 +259,9 @@ are. Nothing half-works in production while David decides whether M3 sold. There
    - **[EUREKA] One daily run is enough, if a gift is due at local midnight of its date.** Store
      `deliver_at` = the first instant of the delivery date in the buyer's time zone. Then a run at 14:00 UTC
      lands *on* that date everywhere from UTC−12 to UTC+14: about 10 am in New York, 7 am in Los Angeles,
-     3 pm in London, 11 pm in Tokyo, 1 am in Sydney. A time like "9 am local" would have needed an hourly
+     3 pm in London, 11 pm in Tokyo, 1 am in Sydney. *(Corrected in the second pass: that holds for
+     whole-hour offsets only. Darwin's midnight falls inside the 14:00 hour, so the run is now at 16:00 UTC;
+     see the Plan at the top.)* A time like "9 am local" would have needed an hourly
      scheduler, which Hobby doesn't have. The one gap is a delivery date of *today* after today's run, and
      the webhook covers it: a gift that's already due sends the moment it's paid.
    - **[EUREKA] The preview page can't run a script, so it can't read the browser's time zone.** An M1 test
@@ -139,7 +294,7 @@ are. Nothing half-works in production while David decides whether M3 sold. There
 
    `email.js` and `print.js` are imported statically from `index.js`, so the nft trace covers them.
 
-### 1. Architecture review (M4)
+#### 1. Architecture review (M4, first build)
 
 ```
 Unpaid preview ── form POST /gift {slug, recipientEmail, recipientName?, fromName, message?, deliverOn, timeZone}
@@ -223,7 +378,7 @@ Prodigi ── GET /prints/<id>/poster.png ─▶ paid print order, live preview
   - **Render cost:** the 12×16 poster at 300 dpi is about 17 MP. It renders once per print order, when
     Prodigi fetches it (measured under "Deploy").
 
-### 3. Test review (M4)
+#### 3. Test review (M4, first build)
 
 Tests are written first and fail before the code exists. Each exit criterion maps to tests:
 
@@ -254,8 +409,6 @@ Other new code paths covered:
   - the second cron in `vercel.json`;
   - the nft trace;
   - an M3 database upgraded in place.
-
-### Earlier plans (kept for reference)
 
 #### M3 — Paid unlock
 
@@ -885,18 +1038,31 @@ Other code paths covered:
     - **Payment.** The buyer pays $9 on Stripe. The signed webhook marks the gift order paid and unlocks the
       preview, so the buyer can download the bundle too.
     - **Delivery.** The gift is due at the first instant of that date in that zone. The daily job
-      (`/jobs/deliver-gifts`, 14:00 UTC) emails the recipient **once**, through Brevo, with the buyer's
-      message, the link to the unlocked preview and the download deadline. A gift dated today goes the moment
-      it's paid. Nothing is ever sent for an unpaid gift.
-    - **Failures.** A send that fails for a moment is retried by the next run. One Brevo refuses (a bad
-      address), or a preview taken down before the date, cancels the gift and logs it for a refund.
+      (`/jobs/deliver-gifts`, 16:00 UTC, which is on the date in every time zone) emails the recipient
+      **once**, through Brevo, with:
+      - the buyer's message;
+      - the link to the unlocked preview;
+      - the download deadline.
+
+      It works through every gift due, in batches, up to Brevo's free 300 a day. A gift dated today goes the
+      moment it's paid. Nothing is ever sent for an unpaid gift.
+    - **Failures.**
+      - A send that fails for a moment is retried by the next run, without holding up the other gifts.
+      - Three failures in a row look like an outage: the run stops and leaves the rest for the next run.
+      - Two things cancel the gift and log it for a refund: Brevo refusing the recipient's address, or the
+        preview being taken down before the date.
+      - Any other refusal, such as an unverified sender, is retried once the setup is fixed. It never
+        cancels.
+      - In "Your orders", a cancelled gift reads "Not sent: we couldn't deliver the email … It will be
+        refunded."
     - **"Your orders".** A box at the top of the preview says "We'll email j•••@example.com on Tuesday,
       October 20, 2026", then "Emailed … on October 20". The address is masked because anyone with the link
       sees the page.
 11. **New in M4: the printed poster.** A paid preview offers **"Hang it on the wall: a printed poster, $29"**:
     the wanted poster on 12×16 in matte art paper, shipped to a US address (shipping included).
     - **The form.** Name, street, optional second line, city, state and ZIP. An incomplete or invalid address
-      is a **400** that names each field, and nothing is stored or charged.
+      is a **400** that names each field, and nothing is stored or charged. A field that's blank, only
+      invisible characters (a zero-width space), or not text at all counts as missing.
     - **Payment.** After the $29 Stripe payment, the webhook places **one** Prodigi print-on-demand order with
       the stored address, and stores Prodigi's order id. Prodigi fetches the print file, a 3600×4800 px PNG
       (300 dpi), from `/prints/<order id>/poster.png`.
@@ -934,7 +1100,7 @@ Other code paths covered:
 
 ```sh
 npm install
-npm test          # 391 tests (about 55 s), no network, no keys, no database, no Stripe, Brevo or Prodigi account
+npm test          # 402 tests (about 45 s), no network, no keys, no database, no Stripe, Brevo or Prodigi account
                   # Node 22.2 or later (zlib.crc32)
 npm run dev       # http://localhost:3000
 ```
@@ -1032,6 +1198,11 @@ README (`docs/screenshots/`). It is separate from `npm test`. What it does, and 
   real domain.
 - **Fonts:** the sandbox Chromium falls back to a monospace face for `system-ui`, so the page text looks
   typewritten. Real phones and desktops use their own system font, so the CSS was left alone.
+- **This run (M4, second pass):** the six PNGs were regenerated after the fixes and each was opened and
+  checked by eye. The run went through the real flow: the home form; the gift form, filled in for a date six
+  days ahead; the paid preview with "Your orders" (gift scheduled, poster at the printer); and both share
+  images. None of this run's fixes changes what those screens show. The cancelled-gift wording only appears
+  after Brevo refuses an address, which the tests cover.
 - **Product changes:** none from the screenshots, which all showed the flow working. Re-running `npm test`
   afterwards showed the deploy-bundle test already failing (`src/` was untouched; same `@vercel/nft` 1.11.0):
   the tracer shipped the wasm but none of the 11 fonts, so `share.png` would have failed on Vercel. The cause
@@ -1079,7 +1250,7 @@ README (`docs/screenshots/`). It is separate from `npm test`. What it does, and 
     - the rewrite works once;
     - Stripe → Developers → Webhooks shows 200s.
 - **Gifts (M4).**
-  - **The job.** `vercel.json` registers a second daily cron, `0 14 * * *` → `/jobs/deliver-gifts`. Hobby
+  - **The job.** `vercel.json` registers a second daily cron, `0 16 * * *` → `/jobs/deliver-gifts`. Hobby
     allows 100 crons per project, each at most daily. It needs `CRON_SECRET` like the deletion job; without
     it, the gift form is hidden.
   - **Email.** Brevo's free plan: 300 emails a day, no card. David verifies one sender address and the
@@ -1087,11 +1258,17 @@ README (`docs/screenshots/`). It is separate from `npm test`. What it does, and 
     shows the sender as `…@brevosend.com`, and its free plan adds a "Sent with Brevo" footer. Both are fine
     for the 100-visitor test, but deliverability is better with an authenticated domain, which costs money
     (What's left).
-  - **Timing.** A gift is due at local midnight on its date. The 14:00–14:59 UTC run lands on that date from
-    UTC−12 to UTC+14: about 10 am in New York, 7 am in Los Angeles, 3 pm in London, 11 pm in Tokyo, 1 am in
-    Sydney. The edge: zones at UTC+9:30 (Adelaide in winter, Darwin) have local midnight inside the run's
-    hour, so a run that fires before 14:30 can leave the gift to the next day's run, which may be up to half
-    an hour after the date ends.
+  - **Timing.** A gift is due at local midnight on its date. Hobby fires a daily cron anywhere from :00:00 to
+    :59:59 of its hour (Vercel's docs), so local midnight must never fall inside that hour. If it did, a run
+    that fired early would miss the gift and the next run could be the day after. **16:00–16:59 UTC is the
+    only hour of the 24 that's on the date in every IANA zone, every day of the year.** That's tested against
+    every zone Node knows. Every other hour misses somewhere: 14:00, the first build's choice, missed Darwin
+    (UTC+9:30) all year and Adelaide in winter. Whole-hour hours also miss on DST-change days, when midnight
+    lands exactly on the hour's edge.
+    - **Local times:** a gift arrives around noon in New York (11 am in winter), 9 am in Los Angeles, 5 pm in
+      London, 1 am in Tokyo and 3 am in Sydney. The US, where the prices and shipping are, gets daytime;
+      Asia-Pacific gets the email overnight, still on the date.
+    - **A gift for today** paid after that day's run goes at once, from the webhook.
 - **Printed posters (M4).**
   - **The printer.** Prodigi: the account is free, and it charges per order. David creates the account and
     the pipeline stores a **sandbox** `PRODIGI_API_KEY`. Sandbox orders are never printed or charged, which
@@ -1124,6 +1301,9 @@ this). **Test-mode payments on Hobby are fine; live mode is not.** Go-live check
    - Prodigi: swap in the live key, set `PRODIGI_ENV=live`, and add a payment card in Prodigi's dashboard
      (it bills per order);
    - place one real order to yourself first.
+   - In test mode, buy one gift dated *today* for your own address. It's emailed at payment, which proves
+     the Brevo sender is verified before any real gift depends on it. A sender problem is now retried, not
+     cancelled, but every gift would still be late until it's fixed.
    - Sales tax on a physical product is David's call: Stripe Tax is a paid add-on, and nothing in the code
      collects tax.
 
@@ -1169,6 +1349,14 @@ Run these in the Neon SQL editor. They're plain SQL, so you never need the conne
   - `gift: order … not sent: …; refund it in Stripe`;
   - `print: Prodigi refused order …`;
   - `payment: … is a second payment, refund it in Stripe`.
+- **Gift log lines that mean "fix the setup" (M4):**
+  - `gift: order … not sent yet (brevo responded 400 (not about the recipient: check that EMAIL_FROM is a
+    verified Brevo sender))`. Brevo is refusing *our* message: usually `EMAIL_FROM` isn't a verified sender.
+    Fix it in Brevo; the gifts are retried by the next run (or run the job by hand).
+  - `brevo responded 401`: a wrong key, or Brevo's "Authorised IPs" setting. Vercel's IPs change, so turn
+    that setting off.
+  - `gift: order … was emailed but not recorded as sent`. The database failed right after Brevo took the
+    email. Run `UPDATE orders SET sent_at = now() WHERE id = '…';` so a later run doesn't send it again.
 - **Paid previews (M3):**
   `SELECT slug, name, paid_at, stripe_session, regenerated_at FROM pets WHERE paid_at IS NOT NULL ORDER BY paid_at DESC;`
   The Stripe dashboard shows the same slug in each payment's metadata, so either side finds the other.
@@ -1252,8 +1440,8 @@ The PDF was checked with the repo's xref-validating reader only. No PDF viewer i
 
 | Exit criterion | Status |
 |---|---|
-| A gift order with a delivery date in the future sends nothing before that date and one email on it | ✅ passing (`test/gift.test.js`, fixed clock).<ul><li>Gift form → 303 to a $9 Checkout. A signed webhook marks the order paid and unlocks the preview, with **no email** at payment.</li><li>The daily runs on October 15 and 19, and one at 23:59:59.999 on October 19 in New York, send nothing. The run at midnight on October 20 in New York sends exactly one email to the recipient, with the link and the message.</li><li>Runs later that day, the next day and on November 1 send nothing more.</li></ul>Also: the same with Tokyo and Los Angeles against the 14:00 UTC run; a gift for today (sent at payment, once, even when Stripe repeats the event); a transient failure (retried, then one email); a permanent one (cancelled, logged for a refund); three concurrent runs (one email); a run that died after claiming (the lease expires, one email); unpaid (never); taken down (never, refund logged); a wrong amount or an order for another preview (nothing). The claim, lease, release, sent and cancel paths are in the store contract on memory **and** PGlite, with an interleaved claim. |
-| A print order creates one print-on-demand order with the stored shipping address and rejects an incomplete address with 400 | ✅ passing (`test/print.test.js`).<ul><li>Paid preview → `/print` → 303 to a $29 Checkout. The address is stored before payment, and nothing is printed before it.</li><li>The signed webhook calls the printer **once**, with exactly the stored address, the order id and the print file URL. The Prodigi id is stored.</li><li>The event repeated three times, or three deliveries racing, still make **one** Prodigi order (the fake dedupes by order id, as Prodigi does by idempotency key).</li><li>Each of name, street, city, state and ZIP missing, empty or blank → **400** naming that field (JSON `fields`, or a page), with no order stored and no Stripe call. A bad ZIP, state, country or length → 400 too.</li></ul>Also: unpaid → 402; no printer → 503; a Prodigi outage → 500, then one order on Stripe's retry; a permanent refusal → 200 and a refund log; the Prodigi request itself (sandbox URL, `X-API-Key`, recipient mapping, `GLOBAL-FAP-12X16`, `fillPrintArea`, asset URL, `alterpaw-<id>` idempotency key, `AlreadyExists`) and its error classes with no key in any message; the print file rendered for real at 3600×4800 with the photo drawn, 404 before payment, 410 when the preview is gone, HEAD without a render. |
+| A gift order with a delivery date in the future sends nothing before that date and one email on it | ✅ passing (`test/gift.test.js`, fixed clock).<ul><li>Gift form → 303 to a $9 Checkout. A signed webhook marks the order paid and unlocks the preview, with **no email** at payment.</li><li>The daily runs on October 15 and 19, and one at 23:59:59.999 on October 19 in New York, send nothing. The run at midnight on October 20 in New York sends exactly one email to the recipient, with the link and the message.</li><li>Runs later that day, the next day and on November 1 send nothing more.</li></ul>**New in the second pass: on the date in every time zone, whenever in its hour Vercel fires the run.** The gift job's hour is read from `vercel.json` (now 16:00 UTC). It's checked at both edges of that hour against all 418 IANA zones, every day for a year, and end to end through the app in ten half-hour, quarter-hour and extreme zones (Darwin, Eucla, Kolkata, Kathmandu, Chatham, St John's, Marquesas, Kiritimati, Pago Pago, New York), with runs at the top of the hour, the end, and alternating: exactly one email, on the date. The old 14:00 run failed this in Darwin, Adelaide and Broken Hill.<br>**Also new in the second pass:** 121 gifts due on one day → all but a deliberately stuck one emailed in that day's run (it used to stop at 50), the stuck one tried once; an outage → at most 5 tries, then every gift sent once by the re-run; one gift's database error fails only that gift; "sent" not recordable after the email went → no second email that day; a Brevo 400 about our sender is retried, not cancelled.<br>Also: the same with Tokyo and Los Angeles against the scheduled run; a gift for today (sent at payment, once, even when Stripe repeats the event); a transient failure (retried, then one email); a permanent one (cancelled, logged for a refund); three concurrent runs (one email); a run that died after claiming (the lease expires, one email); unpaid (never); taken down (never, refund logged); a wrong amount or an order for another preview (nothing). The claim, lease, release, sent and cancel paths are in the store contract on memory **and** PGlite, with an interleaved claim. |
+| A print order creates one print-on-demand order with the stored shipping address and rejects an incomplete address with 400 | ✅ passing (`test/print.test.js`).<ul><li>Paid preview → `/print` → 303 to a $29 Checkout. The address is stored before payment, and nothing is printed before it.</li><li>The signed webhook calls the printer **once**, with exactly the stored address, the order id and the print file URL. The Prodigi id is stored.</li><li>The event repeated three times, or three deliveries racing, still make **one** Prodigi order (the fake dedupes by order id, as Prodigi does by idempotency key).</li><li>Each of name, street, city, state and ZIP missing, empty or blank → **400** naming that field (JSON `fields`, or a page), with no order stored and no Stripe call. A bad ZIP, state, country or length → 400 too.</li><li>New in the second pass: a JSON field that isn't text (null, a number, a list, an object), or one made only of invisible characters (zero-width space, Hangul filler, word joiner; these used to pass), counts as missing → 400 naming it. On Postgres (PGlite), an address with a broken UTF-16 character is stored instead of failing with a 500.</li></ul>Also: unpaid → 402; no printer → 503; a Prodigi outage → 500, then one order on Stripe's retry; a permanent refusal → 200 and a refund log; the Prodigi request itself (sandbox URL, `X-API-Key`, recipient mapping, `GLOBAL-FAP-12X16`, `fillPrintArea`, asset URL, `alterpaw-<id>` idempotency key, `AlreadyExists`) and its error classes with no key in any message; the print file rendered for real at 3600×4800 with the photo drawn, 404 before payment, 410 when the preview is gone, HEAD without a render. |
 
 The M4 deliverables beyond the criteria are tested too:
 - **The buy-as-a-gift form** on unpaid previews only, and only when configured. The detected zone is
@@ -1273,9 +1461,12 @@ the shared `wantedPoster`, so the share images and the bundle had it too, and it
 
 ## What's left
 
-- **Milestones:** M1–M4 are built. M4 was built ahead of its "only if M3 sells" gate, so it ships switched off:
-  its forms appear only once the Brevo and Prodigi keys exist (see Infrastructure). Leaving them unset keeps the
-  gate.
+- **Milestones:** M1–M4 are built, and both M4 exit criteria pass. This run re-verified M4 and fixed what
+  didn't hold in production (see Plan and Review). M4 was built ahead of its "only if M3 sells" gate, so it
+  ships switched off: its forms appear only once the Brevo and Prodigi keys exist (see Infrastructure).
+  Leaving them unset keeps the gate.
+- **M4 left open** (details in Review): a wall-clock budget for the gift run; more than 300 gifts on one day
+  (Brevo's free cap); at-least-once delivery when the database fails right after a send.
 - **Before taking real money** (see Deploy, "Before Stripe goes live"):
   - the commercial-use host decision (requested);
   - live Stripe keys;
@@ -1367,6 +1558,9 @@ no values are in this repo. The file holds the full set:
   decision.
 - M4 adds the Brevo and Prodigi requests and three `vercel env` lines. Stripe needs nothing new, since gifts
   and prints use the same key and webhook.
+- **This run:** `.provision` was missing (the pipeline consumed the last one), so it's written again with
+  the full set below. The request texts are written out in full and name the 16:00 UTC gift job. The Stripe
+  request also asks for receipt emails, which `/legal` relies on for refunds. Nothing new is requested.
 
 | Line | Gives | Used by |
 |---|---|---|
@@ -1374,7 +1568,7 @@ no values are in this repo. The file holds the full set:
 | `gcp key alterpaw generativelanguage.googleapis.com` | `GOOGLE_API_KEY` restricted to the Gemini API | `src/index.js` → model client |
 | `vercel project alterpaw` | the Vercel project, with every stored value as env | hosting (M1–M4) and Vercel Cron (M2, M4) |
 | `request "CRON_SECRET for alterpaw: …"` | a random letters-and-digits value as the Vercel production env var `CRON_SECRET` | `src/index.js` → `/jobs/expire-photos` and (M4) `/jobs/deliver-gifts`; Vercel Cron sends it automatically. Until it exists, uploads still run the deletion (hourly per instance), but **the gift form stays hidden**. |
-| `request "Stripe for alterpaw (M3, …)"` | a **test-mode** Stripe account, a restricted key with Checkout Sessions write stored as `STRIPE_SECRET_KEY`, and a webhook endpoint `https://<domain>/stripe/webhook` (`checkout.session.completed`, `checkout.session.async_payment_succeeded`) whose signing secret is stored as `STRIPE_WEBHOOK_SECRET` | `src/index.js` → `createStripeCheckout` and the webhook. Until both exist, Unlock and the webhook answer 503 and the rest of the site works. Stripe is free to set up; it charges per payment only. |
+| `request "Stripe for alterpaw (M3 $9 unlock, M4 $9 gift and $29 printed poster): …"` | a **test-mode** Stripe account, a restricted key with Checkout Sessions write stored as `STRIPE_SECRET_KEY`, a webhook endpoint `https://<domain>/stripe/webhook` (`checkout.session.completed`, `checkout.session.async_payment_succeeded`) whose signing secret is stored as `STRIPE_WEBHOOK_SECRET`, and receipt emails switched on | `src/index.js` → `createStripeCheckout` and the webhook. Until both exist, Unlock and the webhook answer 503 and the rest of the site works. Stripe is free to set up; it charges per payment only. |
 | `vercel env alterpaw STRIPE_SECRET_KEY` | pushes the stored key to the Vercel env | same |
 | `vercel env alterpaw STRIPE_WEBHOOK_SECRET` | pushes the stored signing secret to the Vercel env | same |
 | `request "Commercial-use hosting for alterpaw, …"` | David's decision: Vercel Hobby forbids commercial use, so before live payments either a plan that allows it (paid) or a free host that allows it and gives a request ~5 s of CPU and ~650 MB (the M4 print file) | hosting. Test mode works on Hobby as it is. |
@@ -1390,9 +1584,117 @@ Brevo has a free plan, and Prodigi charges per printed order, paid out of the bu
 
 ## Review
 
-### M4 review (this run)
+### M4 review, second pass (this run)
 
-**How it was reviewed.** This run's `git status`, M4 files only:
+**How it was reviewed.** This run's `git status`:
+- **Modified:**
+  - code: `src/app.js`, `src/email.js`, `src/input.js`, `src/views.js`, `vercel.json`;
+  - tests: `test/gift.test.js`, `test/print.test.js`, `test/email.test.js`;
+  - other: `BUILD.md`, `docs/screenshots/*.png`.
+- **New:** `.provision` (not committed; the pipeline consumes it).
+
+The first build's M4 review stopped after Pass 1, so this pass covers **all of M4's code**, not just this
+run's diff. Two reviews ran against gstack's checklist ("Review Categories", "Fix-First Heuristic"):
+- my own pass over the M4 diff;
+- a separate read-only reviewer over every M4 file, with targeted checks: Neon vs. PGlite, memory store vs.
+  Postgres shapes, time windows, and type coercion at the form, JSON and Stripe boundaries.
+
+I checked each of the reviewer's findings against the code before acting. It found nothing P1. It
+independently found the 14:00 cron gap I'd already fixed test-first.
+
+#### Pass 1 — CRITICAL (M4, second pass)
+
+| Category | Outcome |
+|---|---|
+| SQL & data safety | Clean. No SQL changed in this run. All of M4's queries are parameterised, and every state change is one conditional UPDATE (see the first build's table below). Under Neon's HTTP driver every M4 operation is a single statement: no transaction or session state is relied on. |
+| Races | Clean, and tightened. A gift that failed in a run now keeps its claim until the run ends, so the run's next batch can't take it straight back; then it's released. A gift that was emailed but couldn't be *recorded* as sent is never released, so no run re-sends it before the 15-minute lease (tested). Vercel's 300 s function limit means a run can't outlive its own lease. |
+| XSS | Clean. The changed "Your orders" line goes through Hono's `html` escaping. The masked address is interpolated as text. |
+| LLM output trust boundary | Clean. Model text never reaches the email address, its links, or Prodigi. |
+| Shell / eval | None. |
+| Enum & value completeness | Clean. `deliverGift`'s results (`sent`/`failed`/`cancelled`) ↔ the `counts` keys ↔ the job's JSON ↔ the webhook's `failed > 0 → 500`. `EmailError.permanent` now has three sources: recipient 400 → true, other 400 → false, the rest → false. Its two consumers are `deliverGift`'s cancel branch and the tests. |
+
+No CRITICAL finding, by me or the reviewer, so there was no CRITICAL fix to make.
+
+#### Pass 2 — fixed in this run (each test-first: the new tests failed, then passed)
+
+- [P2] (confidence 10/10, mine and the reviewer's) `vercel.json`: **a gift for Darwin could arrive the day
+  after its date.** Hobby fires a daily cron anywhere in its hour. At 14:00 UTC, a run firing before 14:30
+  missed Darwin's midnight (UTC+9:30), and the next run was already the following day there. The same applied
+  to Adelaide and Broken Hill in winter. **Fixed:** 16:00 UTC, the only hour that's on the date in every
+  zone all year (see Plan). Tests:
+  - every zone × every day for a year, at both edges of the hour;
+  - an end-to-end gift in ten odd-offset zones.
+- [P2] (confidence 9/10) `src/app.js` `deliverGifts`: **a busy day pushed gifts past their date.** The job
+  claimed one batch of 50 and stopped, so gift 51 waited for tomorrow's run. **Fixed:**
+  - It claims batch after batch until none are due, up to 300 a run (Brevo's free daily cap).
+  - A gift that keeps failing is tried once per run and holds up nobody.
+  - Three failures in a row look like an outage: the run stops after a few tries instead of waiting on 50
+    timeouts, and releases everything for the next run.
+
+  Tests: 121 gifts with one stuck → 120 sent, the stuck one tried once; a 60-gift outage → ≤ 5 tries,
+  nothing left claimed, then 60 sent once each.
+- [P2] (confidence 6/10, plausible) `src/email.js`: **an unverified sender would have cancelled every gift
+  due that day.**
+  - **The problem.** Any Brevo 400 counted as "this recipient can never be emailed", so the gift was
+    cancelled for good. Brevo answers 400 `invalid_parameter` for a bad recipient ("email is not valid in
+    to"), and, by Brevo's help pages and the reviewer's recollection, for an unverified sender too. One
+    setup mistake would have cancelled a day of paid gifts, with no way back but SQL.
+  - **The fix.** Only a 400 whose message names the recipient list cancels. Any other 400 is retried by the
+    next run, with a log line saying to check `EMAIL_FROM`. Brevo's text is matched, never logged.
+  - **The trade-off.** If Brevo words a recipient refusal differently, that gift is retried daily until its
+    preview expires, then cancelled and logged for a refund. Late, but nothing is lost.
+
+  Tests: the Brevo client, with the recipient wording, a sender rejection, another 400, and a non-JSON 400.
+- [P3] (confidence 7/10) `src/app.js`: **one gift's database error stopped the whole run.** An error in
+  `getPet`, `cancelGift` or `markGiftSent` aborted the job (500). The rest of that run's claimed gifts
+  waited 15 minutes, which in practice is the next day. **Fixed:** each gift's error fails only that gift
+  (logged, released at the end of the run). If `markGiftSent` fails *after* Brevo accepted the email, it
+  counts as sent and isn't released, so a re-run that day doesn't email again (tested).
+- [P3] (confidence 6/10) `src/input.js`: **memory could be grown through the gift form.** One cached
+  date formatter per zone string as typed, and `Intl` accepts any letter case, so `aMeRiCa/NeW_yOrK` and
+  friends each added one. **Fixed:** the cache key is lower-cased (tested with 256 casings → at most one
+  new entry).
+- [P3] (confidence 6/10) `src/input.js`: **a lone UTF-16 surrogate (a JSON client) made `/gift` or `/print`
+  answer 500 on Postgres.** jsonb refuses it, and the memory store doesn't, so only Postgres failed.
+  Nothing was charged. **Fixed:** `clean()` makes text well-formed (U+FFFD). Tested on PGlite.
+- [P3] (confidence 9/10) `src/views.js`: **"Your orders" gave the wrong reason for a cancelled gift**
+  ("this preview can no longer be shown"). The page is only shown while the preview *is* live, so the only
+  cancellations a buyer can see are a refused address or erased details. **Fixed:** "Not sent: we couldn't
+  deliver the email to j•••@example.com. It will be refunded." (tested).
+- [P3] (confidence 8/10) `src/input.js`: **a field made only of invisible characters passed as filled in.**
+  Zero-width spaces, joiners, the Hangul filler and word joiners aren't whitespace to JavaScript. An
+  "address" whose street was a zero-width space got past the 400 and would have reached Prodigi. **Fixed:**
+  those characters are ignored for the required-field check (and an optional field made only of them is
+  empty), but kept inside real text, so emoji with joiners survive. Tested on the print form (name,
+  street, city) and the gift form.
+- From my own pass: the print form now has a test for JSON values that aren't text (null, a number, a list,
+  an object). It passed from the start.
+
+`npm test` after the fixes: **402/402 pass**.
+
+#### Left open (M4)
+
+- [P3] (confidence 6/10) **A run with many slow, non-consecutive Brevo failures can hit Vercel's 300 s
+  limit.** Three failures *in a row* stop a run. But Brevo alternating success with 10-second timeouts over
+  hundreds of gifts could run past 300 s. The gifts still claimed then wait out the 15-minute lease, which
+  in practice is the next day's run. A wall-clock budget per run is a few lines; it's left until real
+  volume exists, since a typical send takes well under a second.
+- [P3] **At least once, not exactly once, in one window.** If Brevo accepts an email and the database then
+  fails to record it, nothing re-sends it that day. A run after the 15-minute lease, though (in practice
+  the next day's), may send it again. That beats never; it needs a database failure in that exact window.
+- [P3] **Over 300 gifts due on one day** go over the following days. That's Brevo's free plan's daily
+  cap. A paid Brevo plan and a higher `GIFT_MAX_BATCHES` lift it.
+- [P3] **Brevo's recipient-refusal wording is matched, not contracted.** If Brevo changes it, a bad address
+  is retried daily until its preview expires, then cancelled and logged for a refund. Late, but not lost.
+- [P3] (from the first build) **Gifts arrive at a fixed hour, not a chosen time of day:** about noon in New
+  York, 9 am in Los Angeles, overnight in Asia-Pacific. Hobby allows one run a day.
+- **Not verified here** (unchanged from the first build): a real Brevo send and how it lands (inbox or spam,
+  `brevosend.com` sender); a Prodigi sandbox order and Prodigi fetching the print file; Vercel Cron calling
+  `/jobs/deliver-gifts` at 16:xx UTC.
+
+### M4 review (first build, previous run)
+
+**How it was reviewed.** That run's `git status`, M4 files only:
 - **New:** `src/email.js`, `src/print.js`, `test/gift.test.js`, `test/print.test.js`, `test/email.test.js`.
 - **Modified:**
   - code: `src/app.js`, `src/store.js`, `src/views.js`, `src/payments.js`, `src/bundle.js`, `src/files.js`,
@@ -1407,17 +1709,19 @@ I read the M4 diff against gstack's checklist ("Review Categories", "Fix-First H
 read-only reviewer did the same pass over every M4 file, with targeted checks. I checked each of its
 findings against the code before acting.
 
-#### Pass 1 — CRITICAL (M4)
+#### Pass 1 — CRITICAL (M4, first build)
 
 | Category | Outcome |
 |---|---|
-| SQL & data safety | Clean. Every query is parameterised; `ORDER_COLUMNS` is a constant column list, not data. Every order state change is one conditional UPDATE:<ul><li>`markOrderPaid`: `paid_at IS NULL`, with the read-back in a second statement, as in M3;</li><li>`markGiftSent`: `sent_at IS NULL`;</li><li>`cancelGift`: unsent and uncancelled;</li><li>`releaseGift`: unsent;</li><li>`setPrintOrder`: `pod_order_id IS NULL`.</li></ul>The gift claim is a single `UPDATE … WHERE id IN (SELECT … FOR UPDATE SKIP LOCKED)`. `kind` has a CHECK constraint, and `orders.slug` is a foreign key (tested). The preview page adds one indexed query (`listOrders`). The job reads one preview per due gift, at most 50 per run: bounded, so it's left as is. |
+| SQL & data safety | Clean. Every query is parameterised; `ORDER_COLUMNS` is a constant column list, not data. Every order state change is one conditional UPDATE:<ul><li>`markOrderPaid`: `paid_at IS NULL`, with the read-back in a second statement, as in M3;</li><li>`markGiftSent`: `sent_at IS NULL`;</li><li>`cancelGift`: unsent and uncancelled;</li><li>`releaseGift`: unsent;</li><li>`setPrintOrder`: `pod_order_id IS NULL`.</li></ul>The gift claim is a single `UPDATE … WHERE id IN (SELECT … FOR UPDATE SKIP LOCKED)`. `kind` has a CHECK constraint, and `orders.slug` is a foreign key (tested). The preview page adds one indexed query (`listOrders`). The job reads one preview per due gift, at most 50 per batch: bounded, so it's left as is. |
 | Races | Clean. The gates, all tested:<ul><li>**Two deliveries of a payment:** one marks the order paid.</li><li>**Prints racing:** each call carries the same Prodigi idempotency key, so there's one Prodigi order (tested with three deliveries at once). The stored id stops later calls.</li><li>**Gift runs overlapping, or the webhook's immediate send racing the daily job:** the claim gives each gift to one caller (three concurrent runs, one email; interleaved claims on PGlite, each gift once, none lost).</li></ul>One accepted case: a send that succeeds and is followed by a crash before `markGiftSent` is sent again after the 15-minute lease, on the next run. That's at least once, rather than never, and it needs a crash in that window. |
 | XSS | Clean. The gift form, print form, "Your orders", the 400/503 pages and the gift **email** HTML all go through Hono's `html` escaping, with no `raw()`. The email test puts `<script>`, a link and markup in the name and message, and they come out as text. `x-vercel-ip-timezone` is only used after `isTimeZone` (charset plus `Intl`) accepts it, and it's escaped anyway (tested with `"><script>`). The subject is one line, and Brevo's JSON API takes no raw headers. |
 | LLM output trust boundary | Clean. Nothing the model writes goes into an address, a URL or the email's links. The pet name (user input) appears in the email as escaped text. |
 | Payment trust boundary | Clean. An order is paid only through a verified event whose `metadata.order` exists, belongs to `metadata.slug` and matches the order's stored amount in `usd`. Wrong amount, unknown order, or an order for another preview → nothing (tested). `client_reference_id` is still ignored. Email is only ever sent for a **paid** gift, so the form can't mail strangers for free. |
 | Shell / eval | None. |
 | Enum & value completeness | Clean. Traced through every consumer:<ul><li>`kind` `gift`/`print`: the CHECK, `claimDueGifts` (gifts only), `orderPaid`'s branch, `orderLine`'s branch, the print-file route (`kind === 'print'`).</li><li>The products `bundle`/`gift`/`print`: `PRODUCTS`, `priceLabel`, `createStripeCheckout` (a `RangeError` on an unknown one), `devCheckout`, `payOrder` in the tests.</li><li>The order states (unpaid, paid, claimed, sent, cancelled, Prodigi id, details erased): `orderLine` handles each. Erased details can't reach the page in practice, because an order's details go only after its (older) preview has expired, so that branch is defensive. The erasure itself is tested on the store.</li></ul> |
+
+### M3 review (earlier run)
 
 **How it was reviewed.** This run's `git status`:
 - **New:** `src/payments.js`, `src/files.js`, `src/bundle.js`; `test/payments.test.js`,
