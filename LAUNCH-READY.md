@@ -33,7 +33,7 @@ each judgement call is written down under "Decisions".
    Stripe Checkout, is now **hidden until `STRIPE_SECRET_KEY` is set**, the way the gift and print forms already
    were. Until then the preview shows "Payments aren't switched on yet" instead of a button that would answer
    503. No payment link or key is in the code.
-4. **Visit beacon.** `/beacon.js` sends `POST https://repohq.vercel.app/api/ideas/signal` with JSON
+4. **Visit beacon.** `/beacon.js` sends `POST https://idea-factory.1426davejobs.workers.dev/api/ideas/signal` with JSON
    `{"slug":"alterpaw","kind":…,"referrer":…}`. It's fire-and-forget: `keepalive`, `credentials: 'omit'`, no
    Referer header. The events:
    - **`visit`**: once per browser session (sessionStorage), on every page that loads the beacon: the three
@@ -53,7 +53,7 @@ each judgement call is written down under "Decisions".
      - when storage can't be read;
      - on any deployment that isn't production. The server adds the `<script>` only when Vercel's
        `VERCEL_ENV` is `production`, so preview deployments and local runs never load it.
-   - **CSP.** `connect-src` allows `https://repohq.vercel.app` and nothing else off-site.
+   - **CSP.** `connect-src` allows `https://idea-factory.1426davejobs.workers.dev` and nothing else off-site.
 5. **Deployment.** `.provision` holds `vercel project alterpaw`.
 6. **Tests.** 436 pass (`npm test`, about 40 s; there were 402). New: `test/launch.test.js` and
    `test/beacon.test.js`. They cover:

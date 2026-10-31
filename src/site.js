@@ -83,7 +83,7 @@ export function softwareApplication(origin) {
 //   activate  once per browser (localStorage), the first time a preview is made (upload.js dispatches
 //             "alterpaw:activate" when POST /generate succeeds)
 //   checkout  each time a pay form (data-checkout: Unlock, Buy it as a gift, Order the poster) is submitted
-export const SIGNAL_ENDPOINT = 'https://repohq.vercel.app/api/ideas/signal';
+export const SIGNAL_ENDPOINT = 'https://idea-factory.1426davejobs.workers.dev/api/ideas/signal';
 export const SIGNAL_ORIGIN = new URL(SIGNAL_ENDPOINT).origin;
 export const SIGNAL_SLUG = 'alterpaw';
 
