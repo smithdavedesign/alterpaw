@@ -67,7 +67,7 @@ describe('beacon.js: what it sends', () => {
     assert.equal(sends.length, 1);
     const [{ url, init, body }] = sends;
     assert.equal(url, SIGNAL_ENDPOINT);
-    assert.equal(url, 'https://repohq.vercel.app/api/ideas/signal');
+    assert.equal(url, 'https://idea-factory.1426davejobs.workers.dev/api/ideas/signal');
     assert.equal(init.method, 'POST');
     assert.equal(init.keepalive, true);
     assert.equal(init.credentials, 'omit');
