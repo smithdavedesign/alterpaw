@@ -26,7 +26,10 @@
     // The canonical origin for the search and sharing tags, robots.txt and the sitemap (a custom domain goes here).
     "SITE_HOST": "alterpaw.1426davejobs.workers.dev",
     // The Worker is production: pages load the visit beacon.
-    "DEPLOY_ENV": "production"
+    "DEPLOY_ENV": "production",
+    // gemini-flash-latest ran past the 30 s model timeout on every /generate from the Worker (2026-11-08, three tries);
+    // Flash-Lite answers in a few seconds, as on squadwrap (#7) and pettycourt.
+    "LLM_MODEL": "gemini-flash-lite-latest"
   },
   // Secrets: `provision cloudflare secret alterpaw DATABASE_URL` and GOOGLE_API_KEY. Stripe, Brevo, Prodigi
   // and CRON_SECRET are optional (src/deps.js).
