@@ -6,7 +6,7 @@
 //     now         — () => Date; drives the 30-day expiry and the webhook's replay window
 //     renderShare — (pet, photo, { size, host }) => Promise<{ png, photoShown, photoProblem? }> (share.js, loaded
 //                   on first use)
-//     cronSecret  — bearer token Vercel Cron sends to /jobs/expire-photos; unset means the job refuses to run
+//     cronSecret  — bearer token the scheduler sends to /jobs/*; unset means the jobs refuse to run
 //     uploadSweepWaitMs — how long an upload waits for its photo-deletion sweep before answering anyway
 //     checkout    — ({ slug, successUrl, cancelUrl }) => Promise<{ id, url }>, a Stripe Checkout Session
 //                   (payments.js); null means payments aren't configured
@@ -22,6 +22,9 @@
 //                   ('https://host', from VERCEL_PROJECT_PRODUCTION_URL); null means the request's origin
 //     beacon      — load the RepoHQ visit beacon on the pages (true on the production deployment only)
 //     renderOg    — () => Promise<Uint8Array>, the 1200×630 link-preview PNG (share.js, loaded on first use)
+//   Cloudflare Worker (src/worker.js):
+//     clientIpHeader — a request header the host sets to the client's address ('cf-connecting-ip'); null means
+//                   the last X-Forwarded-For entry (clientIp)
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { csrf } from 'hono/csrf';
@@ -124,11 +127,14 @@ export function previewStatus(pet, now) {
   return 'live';
 }
 
-// The client address as the edge proxy saw it. Vercel overwrites X-Forwarded-For and Cloudflare appends to
-// it, so the last entry is theirs; anything in front of it could have been typed by the client. This trust
-// is only right behind such a proxy: on a host that passes the header through untouched, a client can set
+// The client address as the edge proxy saw it. On a Cloudflare Worker that's CF-Connecting-IP, which Cloudflare
+// sets itself (`clientIpHeader`, src/worker.js). Otherwise: Vercel overwrites X-Forwarded-For and Cloudflare
+// appends to it, so the last entry is theirs; anything in front of it could have been typed by the client. This
+// trust is only right behind such a proxy: on a host that passes the header through untouched, a client can set
 // it (check before moving hosts). With no header at all every reporter is "unknown" and counts once.
-function clientIp(c) {
+function clientIp(c, clientIpHeader) {
+  const edge = clientIpHeader ? c.req.header(clientIpHeader)?.trim() : '';
+  if (edge) return edge;
   const forwarded = c.req.header('x-forwarded-for');
   const last = forwarded
     ?.split(',')
@@ -260,6 +266,7 @@ export function createApp({
   siteUrl = null,
   beacon = false,
   renderOg = renderOgLazily,
+  clientIpHeader = null,
 }) {
   const app = new Hono();
   // What the pages need to know about the site: the canonical origin and whether to load the visit beacon.
@@ -355,7 +362,8 @@ export function createApp({
   const giftLatest = (pet) => new Date(photoDeletedAt(pet).getTime() - GIFT_MIN_DAYS_TO_DOWNLOAD * DAY_MS);
   function giftOffer(c, pet) {
     if (giftsMissing() || pet.paidAt) return null;
-    const detected = c.req.header('x-vercel-ip-timezone');
+    // Cloudflare puts the visitor's zone on the request (`cf.timezone`); Vercel sent it as a header.
+    const detected = c.req.raw.cf?.timezone ?? c.req.header('x-vercel-ip-timezone');
     const zone = isTimeZone(detected) ? detected : DEFAULT_GIFT_ZONE;
     const minDate = dateIn(now(), zone);
     const maxDate = dateIn(giftLatest(pet), zone);
@@ -999,7 +1007,7 @@ export function createApp({
 
       let result;
       try {
-        const reporter = await reporterKey(reportSlug, clientIp(c));
+        const reporter = await reporterKey(reportSlug, clientIp(c, clientIpHeader));
         result = await store.reportPet(reportSlug, { reporter, reason, at: now() });
       } catch (err) {
         logger.error(`report: ${redact(err)}`);

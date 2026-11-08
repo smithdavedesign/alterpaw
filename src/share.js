@@ -13,8 +13,11 @@
 // Assets are loaded with literal `new URL(…, import.meta.url)` paths because that is the form Vercel's file
 // tracer follows (`createRequire().resolve()` and computed paths are not); test/share.test.js traces the
 // entry and checks every URL in ASSET_URLS.
+// satori's standalone build takes its layout wasm (yoga) from us instead of compiling bytes inlined in its
+// own code: a Cloudflare Worker can't compile wasm at run time, only use modules bundled at deploy. Every
+// asset goes through one reader: readFile under Node, the Worker's bundled modules there (src/worker.js).
 import { readFile } from 'node:fs/promises';
-import satori from 'satori';
+import satori, { init as initSatori } from 'satori/standalone';
 import { initWasm, Resvg } from '@resvg/resvg-wasm';
 import { SPECIES_STYLE, SHARE_SIZES } from './views.js';
 import { OG_IMAGE } from './site.js';
@@ -43,6 +46,7 @@ const BRAND = '#f97316';
 const NO_NAME = 'UNKNOWN SUSPECT';
 
 const WASM_URL = new URL('../node_modules/@resvg/resvg-wasm/index_bg.wasm', import.meta.url);
+const LAYOUT_WASM_URL = new URL('../node_modules/satori/layout.wasm', import.meta.url);
 // Satori only falls back to a font with a *different* name when a glyph is missing (same-name fonts give
 // boxes), so each extra script is its own family. Together they draw Latin (incl. extended and Vietnamese),
 // Greek and Cyrillic names; anything else is dropped from the image by drawable() below.
@@ -62,13 +66,20 @@ const FONT_FILES = [
   { name: 'SlabGreek', weight: 400, url: new URL('../node_modules/@fontsource/roboto-slab/files/roboto-slab-greek-400-normal.woff', import.meta.url) },
   { name: 'SlabGreek', weight: 700, url: new URL('../node_modules/@fontsource/roboto-slab/files/roboto-slab-greek-700-normal.woff', import.meta.url) },
 ];
-export const ASSET_URLS = [WASM_URL, ...FONT_FILES.map(({ url }) => url)];
+export const ASSET_URLS = [WASM_URL, LAYOUT_WASM_URL, ...FONT_FILES.map(({ url }) => url)];
 
-// resvg can be initialised once per process, so its promise is kept once it succeeds; the fonts have their
-// own memo. A failed read of either is retried on the next request without re-initialising the other.
+// The reader the renderers use when the caller passes none: (url) => Promise of the file's bytes (or, for a
+// .wasm file, a compiled WebAssembly.Module, which both initialisers also take). A Worker sets its own.
+let defaultRead = readFile;
+export function setAssetReader(read) {
+  defaultRead = read;
+}
+
+// resvg and satori can each be initialised once per process, so a promise is kept once it succeeds; the fonts
+// have their own memo. A failed read of one is retried on the next request without re-initialising the others.
 let resvgReady = null;
 function initResvg(read) {
-  resvgReady ??= read(WASM_URL)
+  resvgReady ??= Promise.resolve(read(WASM_URL))
     .then((wasm) => initWasm(wasm))
     .catch((err) => {
       resvgReady = null;
@@ -77,10 +88,21 @@ function initResvg(read) {
   return resvgReady;
 }
 
+let layoutReady = null;
+function initLayout(read) {
+  layoutReady ??= Promise.resolve(read(LAYOUT_WASM_URL))
+    .then((wasm) => initSatori(wasm))
+    .catch((err) => {
+      layoutReady = null;
+      throw err;
+    });
+  return layoutReady;
+}
+
 let fontsReady = null;
-export function loadFonts(read = readFile) {
+export function loadFonts(read = defaultRead) {
   fontsReady ??= Promise.all(
-    FONT_FILES.map(({ name, weight, url }) => read(url).then((data) => ({ name, data, weight, style: 'normal' }))),
+    FONT_FILES.map(({ name, weight, url }) => Promise.resolve(read(url)).then((data) => ({ name, data, weight, style: 'normal' }))),
   ).catch((err) => {
     fontsReady = null;
     throw err;
@@ -88,9 +110,9 @@ export function loadFonts(read = readFile) {
   return fontsReady;
 }
 
-// resvg and the fonts, ready to render; resolves to the fonts satori needs.
-export async function loadRenderer(read = readFile) {
-  const [, fonts] = await Promise.all([initResvg(read), loadFonts(read)]);
+// resvg, satori's layout engine and the fonts, ready to render; resolves to the fonts satori needs.
+export async function loadRenderer(read = defaultRead) {
+  const [, , fonts] = await Promise.all([initResvg(read), initLayout(read), loadFonts(read)]);
   return fonts;
 }
 
@@ -357,7 +379,7 @@ export function ogTree() {
   return el('div', { width, height, background: NIGHT, fontFamily: 'Slab', alignItems: 'center', justifyContent: 'space-between', padding: '0 76px 0 70px' }, [pitch, poster]);
 }
 
-export async function renderOgPng({ read = readFile } = {}) {
+export async function renderOgPng({ read = defaultRead } = {}) {
   const fonts = await loadRenderer(read);
   return rasterise(ogTree(), OG_IMAGE, fonts);
 }
@@ -365,7 +387,7 @@ export async function renderOgPng({ read = readFile } = {}) {
 // A photo that can't be drawn (unreadable, unsupported, oversized, or rejected by the decoder) must not cost
 // the owner their share image: it renders without it, and `photoProblem` says why so the caller can log it.
 // `read` is injectable so tests can make asset loading fail.
-export async function renderSharePng(pet, photo, { size = 'post', host, read = readFile } = {}) {
+export async function renderSharePng(pet, photo, { size = 'post', host, read = defaultRead } = {}) {
   if (!Object.hasOwn(SHARE_SIZES, size) || !Object.hasOwn(LAYOUT, size)) throw new RangeError(`unknown share size: ${size}`);
   const fonts = await loadRenderer(read);
   let photoProblem = photoProblemOf(photo);

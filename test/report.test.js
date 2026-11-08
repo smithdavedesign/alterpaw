@@ -116,6 +116,22 @@ describe('POST /report (M2 exit criterion 2)', () => {
     assert.equal((await store.getPet(slug)).reports, 0);
   });
 
+  test("on the Worker, CF-Connecting-IP is the reporter: X-Forwarded-For can't make one person count twice", async () => {
+    const { app, store } = makeApp({ clientIpHeader: 'cf-connecting-ip' });
+    const slug = await createPreview(app);
+    const post = (cfIp, forwarded) =>
+      app.request('/report', {
+        method: 'POST',
+        body: JSON.stringify({ slug }),
+        headers: { 'content-type': 'application/json', accept: 'application/json', origin: 'http://localhost', 'cf-connecting-ip': cfIp, 'x-forwarded-for': forwarded },
+      });
+    assert.equal((await post('198.51.100.7', '203.0.113.1')).status, 200);
+    assert.equal((await post('198.51.100.7', '203.0.113.2')).status, 200);
+    assert.equal((await store.getPet(slug)).reports, 1, 'same CF-Connecting-IP, different X-Forwarded-For: one report');
+    await post('198.51.100.8', '203.0.113.2');
+    assert.equal((await store.getPet(slug)).reports, 2, 'another address counts');
+  });
+
   test('a cross-site JSON post is refused too (Hono\'s csrf() only checks form content types)', async () => {
     const { app, store } = makeApp();
     const slug = await createPreview(app);

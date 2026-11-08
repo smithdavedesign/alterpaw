@@ -1,0 +1,37 @@
+{
+  // The alterpaw Worker on Cloudflare (Workers Paid, for the image rendering's CPU):
+  // `provision cloudflare deploy alterpaw "$PWD"`. No build step: wrangler bundles src/worker.js at deploy.
+  "name": "alterpaw",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-10-15",
+  // node:zlib (PNG and PDF compression), node:util and Buffer for the paid bundle (src/files.js).
+  "compatibility_flags": ["nodejs_compat"],
+  // /beacon.js is beaconScript.toString() (src/site.js): esbuild's keepNames would put __name() calls, which
+  // don't exist in the browser, into the function's source.
+  "keep_names": false,
+  // Two base addresses the bundle lacks, neither ever fetched: share.js names its assets
+  // `new URL('../node_modules/…', import.meta.url)`, and import.meta.url isn't a URL inside the bundle (the
+  // Worker failed to start); the Worker looks assets up by file name only (src/worker.js). satori's layout
+  // engine reads self.location.href when it sees a worker, and workerd has no self.location (every render
+  // failed); it's given the compiled wasm, so it loads nothing from there.
+  "define": {
+    "import.meta.url": "\"file:///bundle/src/share.js\"",
+    "self.location.href": "\"file:///bundle/\""
+  },
+  // The renderers' wasm is bundled as compiled modules (wrangler's default for .wasm); the fonts as bytes.
+  "rules": [{ "type": "Data", "globs": ["**/*.woff"], "fallthrough": false }],
+  // A share image is 0.1 to 1 s of CPU, the paid bundle's four print-size cards about 3 s.
+  "limits": { "cpu_ms": 30000 },
+  "vars": {
+    // The canonical origin for the search and sharing tags, robots.txt and the sitemap (a custom domain goes here).
+    "SITE_HOST": "alterpaw.1426davejobs.workers.dev",
+    // The Worker is production: pages load the visit beacon.
+    "DEPLOY_ENV": "production"
+  },
+  // Secrets: `provision cloudflare secret alterpaw DATABASE_URL` and GOOGLE_API_KEY. Stripe, Brevo, Prodigi
+  // and CRON_SECRET are optional (src/deps.js).
+  // The daily jobs (src/schedule.js): photo deletion at 04:00 UTC, gifts at 16:00 UTC.
+  "triggers": { "crons": ["0 4 * * *", "0 16 * * *"] },
+  "workers_dev": true,
+  "observability": { "enabled": true }
+}

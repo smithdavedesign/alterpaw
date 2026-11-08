@@ -279,7 +279,7 @@ export const BUNDLE_FILE_NAME = 'alterpaw-bundle.zip';
 const DAY_MS = 24 * 60 * 60 * 1000;
 const longDate = (date) => date.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
 
-// M4: the zones the gift form offers. The one Vercel detected (x-vercel-ip-timezone) is added if it's missing,
+// M4: the zones the gift form offers. The one the host detected (Cloudflare's, or Vercel's x-vercel-ip-timezone) is added if it's missing,
 // so every buyer can pick their own; any valid IANA name is accepted by the server.
 export const GIFT_TIME_ZONES = [
   ['America/New_York', 'Eastern time (New York)'],
@@ -604,7 +604,7 @@ export const paymentsUnavailablePage = ({ retry }) =>
 // /terms and /privacy (they replace M3's single /legal page, which now redirects to /terms): what Stripe asks a
 // merchant's site to show, and what a buyer needs before paying. Keep them in step with the code (retention,
 // processors, what the model receives, the visit beacon in site.js). `site` as in layout().
-const LEGAL_UPDATED = 'October 14, 2026';
+const LEGAL_UPDATED = 'November 8, 2026';
 
 const contactSection = () => html`<h2 id="contact">Contact</h2>
   <p>Questions, problems or requests: open an issue at <a href="${ISSUES_URL}">${ISSUES_URL.replace('https://', '')}</a>. Issues are public, so don't post your preview's link, an email address or a street address there. To have a preview removed, use "Report this page" on it, or reply to your Stripe receipt if you bought something.</p>`;
@@ -655,7 +655,7 @@ export function privacyPage({ retentionDays, site = null }) {
 
   <h2 id="who-processes-it">Who processes it</h2>
   <p>Text is written by Google's Gemini API. It receives the name, species, traits and alter ego, never the photo. On its free tier Google may use that text to improve its products, so don't put anything private in those fields.</p>
-  <p>The database is hosted by Neon and the site by Vercel, whose servers see each request (your IP address and browser) to serve it.</p>
+  <p>The database is hosted by Neon and the site by Cloudflare (Workers), whose servers see each request (your IP address and browser) to serve it.</p>
 
   <h2 id="cookies">Cookies</h2>
   <p>alterpaw sets no cookies. The visit counter below keeps a flag or two in your browser's own storage (sessionStorage and localStorage, not cookies) so it counts you once; the flags hold no ID. Stripe's checkout page is on Stripe's own site, under Stripe's cookie policy.</p>

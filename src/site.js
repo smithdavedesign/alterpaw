@@ -1,6 +1,7 @@
 // Go-live: what search engines and link previews see, and the RepoHQ visit beacon.
 //   PUBLIC_PAGES      the indexable pages, each with its own title and description; the sitemap lists them
-//   siteUrlFromEnv    the canonical origin, from Vercel's VERCEL_PROJECT_PRODUCTION_URL (null: use the request's)
+//   siteUrlFromEnv    the canonical origin, from SITE_HOST (wrangler.jsonc) or Vercel's VERCEL_PROJECT_PRODUCTION_URL
+//                     (null: use the request's)
 //   robotsTxt, sitemapXml, softwareApplication (JSON-LD), OG_IMAGE (drawn by share.js)
 //   BEACON_SCRIPT     /beacon.js; the page loads it on the production deployment only (app.js)
 // Only fixed text and the origin go into any of this, never user text.
@@ -39,11 +40,12 @@ export const OG_IMAGE = {
   alt: "alterpaw: a wanted poster for your pet, with the headline \"Your pet's secret life, exposed.\"",
 };
 
-// Vercel sets this to the project's production domain (the shortest custom domain, else the vercel.app one),
+// SITE_HOST is the Worker's address (wrangler.jsonc vars). Vercel set VERCEL_PROJECT_PRODUCTION_URL to the
+// project's production domain (the shortest custom domain, else the vercel.app one); SITE_HOST wins. Both are
 // without a scheme. Anything that isn't a plain host name is ignored and the request's origin is used.
 const HOST_NAME = /^(?=.{4,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/i;
 export function siteUrlFromEnv(env) {
-  const host = env.VERCEL_PROJECT_PRODUCTION_URL;
+  const host = env.SITE_HOST || env.VERCEL_PROJECT_PRODUCTION_URL;
   return typeof host === 'string' && HOST_NAME.test(host) ? `https://${host.toLowerCase()}` : null;
 }
 

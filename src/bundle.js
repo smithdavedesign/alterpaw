@@ -9,7 +9,6 @@
 // at most 1600 px on the long side, so 2× would only upscale the photo while making each image ~1.7× larger.
 // Text is drawn as vector glyphs (satori), so it stays sharp at any zoom. The fonts, wasm and layout helpers
 // come from share.js.
-import { readFile } from 'node:fs/promises';
 import {
   el,
   text,
@@ -201,7 +200,7 @@ function rgbOf(image) {
 // About 0.75 s and 16 MB of wasm memory per card (freed after each). Each card's compression runs on the
 // thread pool while the next one renders. A photo the decoder rejects is left out of the remaining cards,
 // as on the share images, and `photoProblem` says why.
-export async function renderBundle(pet, photo, { read = readFile } = {}) {
+export async function renderBundle(pet, photo, { read } = {}) {
   const fonts = await loadRenderer(read);
   let photoProblem = photoProblemOf(photo);
   let photoSrc = photoProblem ? null : dataUrl(photo);
@@ -248,7 +247,7 @@ export function printPosterTree(pet, { photoSrc = null } = {}) {
 }
 
 // About 17 MP: a few seconds of CPU, once per print order (when Prodigi fetches the file).
-export async function renderPrintPoster(pet, photo, { read = readFile } = {}) {
+export async function renderPrintPoster(pet, photo, { read } = {}) {
   const fonts = await loadRenderer(read);
   let photoProblem = photoProblemOf(photo);
   let photoSrc = photoProblem ? null : dataUrl(photo);

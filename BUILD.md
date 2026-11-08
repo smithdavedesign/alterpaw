@@ -1227,7 +1227,41 @@ The notes below are from the M4 run and still describe how the script works:
 
 ## Deploy (free tier)
 
-**Vercel Hobby (this milestone).**
+**Cloudflare Worker (since 2026-11-08).** Vercel blocked the agent account on 2026-10-31 (every deployment
+answers 402), so alterpaw runs on a Worker: https://alterpaw.1426davejobs.workers.dev. Workers Paid, because a
+share image is 0.1–1 s of CPU and the free plan allows 10 ms; `limits.cpu_ms` is 30 s.
+- **Deploy.** `provision cloudflare deploy alterpaw "$PWD"` from a checkout of main. No build step: wrangler
+  bundles `src/worker.js` (about 1.8 MB gzipped). Secrets: `provision cloudflare secret alterpaw DATABASE_URL`
+  and `GOOGLE_API_KEY`; the optional ones (Stripe, Brevo, Prodigi, `CRON_SECRET`) the same way.
+- **Settings.** `wrangler.jsonc` vars: `SITE_HOST` (canonical URLs, robots.txt, sitemap) and
+  `DEPLOY_ENV=production` (the visit beacon). Both win over Vercel's own variables (`src/deps.js`).
+- **Rendering on a Worker.** A Worker can't read files or compile wasm at run time, so:
+  - resvg's wasm, satori's layout wasm and the fonts are imported in `src/worker.js` and bundled at deploy;
+    `setAssetReader` hands them to `share.js`, which looks them up by file name. share.js now uses
+    `satori/standalone` and initialises its layout engine with that wasm (Node reads the same file).
+  - satori also shapes text with harfbuzz, carried as inline bytes it compiles on first use. Without help the
+    first render waited forever. `src/harfbuzz-wasm.js` (imported first) bundles the identical
+    `harfbuzzjs/hb.wasm` and hands that compiled module to `WebAssembly.instantiate` when it's asked for
+    bytes of that size. `test/worker.test.js` checks the two are byte for byte the same, so a satori upgrade
+    that changes it fails a test, not production.
+  - `define` in `wrangler.jsonc` gives the bundle a fixed `import.meta.url` (share.js builds its asset URLs
+    from it) and `self.location.href` (satori's emscripten loader reads it); neither is ever fetched.
+  - `keep_names` is off: `/beacon.js` is a function's source, and esbuild's `__name()` calls would break it.
+- **Jobs.** Cron Triggers replace Vercel Cron: `0 4 * * *` → `/jobs/expire-photos`, `0 16 * * *` →
+  `/jobs/deliver-gifts` (`src/schedule.js`). The `scheduled` handler sends the request straight to the app
+  with a bearer secret: `CRON_SECRET` if set, else a random one per isolate, so the jobs need no stored
+  secret, and gifts no longer wait on one. Over HTTP, `/jobs/*` still answers only `CRON_SECRET`. A job that
+  isn't configured (gifts without Brevo) answers 503 and the run is logged as skipped; any other failure
+  throws, so it shows in the Worker's Cron Events. `vercel.json` is gone; the tests read the schedule from
+  `src/schedule.js` and check `wrangler.jsonc` against it.
+- **Report counter.** On the Worker the reporter's address is `CF-Connecting-IP`, which Cloudflare sets.
+- **Gift time zone.** From `request.cf.timezone` (Vercel's `x-vercel-ip-timezone` still works).
+- **Limits to know.** A Worker has 128 MB of memory. Share images (1080×1920 at most) and the paid bundle's
+  four 1800×2250 cards fit. The print poster (3600×4800, about 69 MB of pixels plus copies for the PNG) very
+  likely doesn't; prints are off (no `PRODIGI_API_KEY`), and it's untested on the Worker. Before selling
+  prints, render it smaller or off the Worker.
+
+**Vercel Hobby (until 2026-11-08, kept for reference; `src/index.js` still serves the app on Node).**
 - **Setup.** The pipeline creates the Vercel project and pushes `DATABASE_URL`, `GOOGLE_API_KEY` and (once
   David provides it) `CRON_SECRET` to it. See Infrastructure.
 - **Function.** Vercel detects Hono from `package.json` and serves the default export of `src/index.js` as

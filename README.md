@@ -1,5 +1,7 @@
 # alterpaw — your pet's secret life, as a funny wanted poster, newspaper and trading card
 
+**Live:** https://alterpaw.1426davejobs.workers.dev (a Cloudflare Worker since 2026-11-08; BUILD.md, "Deploy").
+
 ## Screenshots
 
 ![The start page on desktop, with the form filled in for Biscuit the dog and the photo chosen](docs/screenshots/home-desktop.png)
