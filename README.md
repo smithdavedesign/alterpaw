@@ -2,7 +2,16 @@
 
 **Live:** https://alterpaw.1426davejobs.workers.dev (a Cloudflare Worker since 2026-11-08; BUILD.md, "Deploy").
 
-## Screenshots
+## On the live site (2026-11-08)
+
+Taken in Chromium against https://alterpaw.1426davejobs.workers.dev, at 1280×800 and as an iPhone 13. The preview was made live from the sample dog that `npm run screenshots` draws, so no real pet or person is shown.
+
+![The live start page on desktop](docs/screenshots/live-home-desktop.png)
+![The live start page on an iPhone 13](docs/screenshots/live-home-mobile.png)
+![A live preview on desktop: Biscuit "The Crust" Corleone's wanted poster, Daily Bark front page and trading card, watermarked](docs/screenshots/live-preview-desktop.png)
+![The same live preview on an iPhone 13](docs/screenshots/live-preview-mobile.png)
+
+## Screenshots (local app)
 
 ![The start page on desktop, with the form filled in for Biscuit the dog and the photo chosen](docs/screenshots/home-desktop.png)
 The start page takes one photo (shrunk in the browser), a name, a species, three traits and an alter ego.
