@@ -51,8 +51,9 @@ each judgement call is written down under "Decisions".
      - when `navigator.webdriver` is true (bots, screenshot runs);
      - when localStorage `repohq:notrack` is set (to any value);
      - when storage can't be read;
-     - on any deployment that isn't production. The server adds the `<script>` only when Vercel's
-       `VERCEL_ENV` is `production`, so preview deployments and local runs never load it.
+     - on any deployment that isn't production. The server adds the `<script>` only when `DEPLOY_ENV` (set
+       to `production` in `wrangler.jsonc`, the Worker) or else Vercel's `VERCEL_ENV` is `production`, so
+       local runs never load it.
    - **CSP.** `connect-src` allows `https://idea-factory.1426davejobs.workers.dev` and nothing else off-site.
 5. **Deployment.** `.provision` holds `vercel project alterpaw`.
 6. **Tests.** 436 pass (`npm test`, about 40 s; there were 402). New: `test/launch.test.js` and
@@ -173,17 +174,17 @@ each judgement call is written down under "Decisions".
      - a restricted key, stored as **`STRIPE_SECRET_KEY`**;
      - a webhook at `https://<domain>/stripe/webhook` for `checkout.session.completed` and
        `checkout.session.async_payment_succeeded`, its signing secret stored as **`STRIPE_WEBHOOK_SECRET`**;
-     - both in the Vercel env through the credential broker.
+     - both as Worker secrets through the credential broker (`provision cloudflare secret alterpaw <KEY>`).
    - Until then the free preview and share images work and the Buy button stays hidden.
-   - **Before taking real money:** Vercel Hobby forbids commercial use. Either move the project to a plan that
-     allows it, or move to another host (BUILD.md, "Before Stripe goes live").
-2. **A custom domain, if you want one.** Add it in Vercel → Project → Domains. The canonical URLs, sitemap and
-   robots.txt follow on their own via `VERCEL_PROJECT_PRODUCTION_URL`. Keep "Automatically expose System
-   Environment Variables" on (Vercel's default). A domain costs money, so it's optional; `alterpaw.vercel.app`
-   works.
-3. **Check the infrastructure from earlier runs.** The site only works with **`DATABASE_URL`** (Neon) and
-   **`GOOGLE_API_KEY`** (Gemini) in the Vercel env. `CRON_SECRET` runs the daily photo deletion and gift
-   delivery. Brevo and Prodigi are optional (gifts, prints).
+   - The site moved off Vercel Hobby (no commercial use) to a Cloudflare Worker on 2026-11-08, so the old
+     blocker on charging is gone (BUILD.md, "Deploy").
+2. **A custom domain, if you want one.** Attach it to the `alterpaw` Worker in Cloudflare and set `SITE_HOST`
+   in `wrangler.jsonc` to it; the canonical URLs, sitemap and robots.txt follow. A domain costs money, so it's
+   optional; `alterpaw.1426davejobs.workers.dev` works.
+3. **Infrastructure.** The site only works with **`DATABASE_URL`** (Neon) and **`GOOGLE_API_KEY`** (Gemini) as
+   Worker secrets; both are set. The daily photo deletion and gift delivery run from Cron Triggers and need no
+   `CRON_SECRET`. Brevo and Prodigi are optional (gifts, prints); prints need work first (BUILD.md, "Limits
+   to know").
 4. **The contact link.** It only works if `github.com/smithdavedesign/alterpaw` is public with Issues enabled.
 5. **Read `/terms` and `/privacy` once.** They're yours to confirm: the 14-day refund promise, the no-warranty
    wording, and the processor list.

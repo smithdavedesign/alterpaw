@@ -44,15 +44,14 @@ const postGift = (app, fields, options = {}) => postForm(app, `${SITE}/gift`, fi
 
 const HOUR_MS = 60 * 60 * 1000;
 
-// The UTC hour of the gift job's daily schedule in vercel.json ("M H * * *"). Vercel Hobby fires a daily cron
-// anywhere within its hour, so a run is any instant from H:00 to H:59:59.999 UTC.
+// The UTC hour of the gift job's daily Cron Trigger (src/schedule.js, "M H * * *"). Cloudflare fires it on the
+// minute; a run is still taken as any instant from H:00 to H:59:59.999 UTC, which also covers a late run.
 async function giftRunHour() {
-  const { readFile } = await import('node:fs/promises');
-  const config = JSON.parse(await readFile(new URL('../vercel.json', import.meta.url), 'utf8'));
-  const crons = (config.crons ?? []).filter((c) => c.path === '/jobs/deliver-gifts');
+  const { SCHEDULED_JOBS } = await import('../src/schedule.js');
+  const crons = Object.entries(SCHEDULED_JOBS).filter(([, path]) => path === '/jobs/deliver-gifts');
   assert.equal(crons.length, 1, 'one gift job');
-  const match = crons[0].schedule.match(/^(\d{1,2}) (\d{1,2}) \* \* \*$/);
-  assert.ok(match, `a once-a-day schedule (Hobby allows no more): ${crons[0].schedule}`);
+  const match = crons[0][0].match(/^(\d{1,2}) (\d{1,2}) \* \* \*$/);
+  assert.ok(match, `a once-a-day schedule: ${crons[0][0]}`);
   return Number(match[2]);
 }
 
@@ -537,7 +536,7 @@ describe('GET /jobs/deliver-gifts authorisation', () => {
     assert.ok(ctx.logs.some((l) => l.startsWith('error') && l.includes('database unavailable')));
   });
 
-  test('vercel.json runs it once a day, at an hour that lands on the delivery date in every time zone, all year', async () => {
+  test('the Cron Trigger runs it once a day, at an hour that lands on the delivery date in every time zone, all year', async () => {
     const hour = await giftRunHour();
     const late = [];
     for (const timeZone of [...Intl.supportedValuesOf('timeZone'), 'UTC']) {
@@ -569,6 +568,15 @@ describe('the gift on the preview page', () => {
     assert.match(html, /<option value="America\/Chicago" selected>/);
     assert.match(html, /<input type="date" name="deliverOn"[^>]*min="2026-10-14"[^>]*max="2026-11-06"/);
     assert.ok(!/<script/i.test(html), 'still no script on the preview page');
+  });
+
+  test("on the Worker, Cloudflare's detected zone (request.cf.timezone) is pre-selected", async () => {
+    const ctx = giftApp();
+    const slug = await createPreview(ctx.app);
+    const request = new Request(`http://localhost/p/${slug}`);
+    Object.defineProperty(request, 'cf', { value: { timezone: 'America/Denver' } });
+    const html = await (await ctx.app.fetch(request)).text();
+    assert.match(html, /<option value="America\/Denver" selected>/);
   });
 
   test('a zone missing from the list is added; a bogus header falls back to New York', async () => {

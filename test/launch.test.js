@@ -113,6 +113,15 @@ describe('VERCEL_PROJECT_PRODUCTION_URL sets the canonical origin', () => {
     assert.equal(deps.siteUrl, 'https://alterpaw.vercel.app');
     assert.equal(depsFromEnv({}).siteUrl, null);
   });
+
+  test("the Worker's SITE_HOST (wrangler.jsonc) works the same way and wins over Vercel's", () => {
+    assert.equal(siteUrlFromEnv({ SITE_HOST: 'alterpaw.1426davejobs.workers.dev' }), 'https://alterpaw.1426davejobs.workers.dev');
+    assert.equal(
+      siteUrlFromEnv({ SITE_HOST: 'alterpaw.1426davejobs.workers.dev', VERCEL_PROJECT_PRODUCTION_URL: 'alterpaw.vercel.app' }),
+      'https://alterpaw.1426davejobs.workers.dev',
+    );
+    assert.equal(siteUrlFromEnv({ SITE_HOST: 'https://alterpaw.example' }), null);
+  });
 });
 
 describe('robots.txt and sitemap.xml', () => {
@@ -215,7 +224,7 @@ describe('/privacy', () => {
     const { app } = makeApp();
     const { html } = await page(app, '/privacy');
     assert.match(html, /<h1>Privacy<\/h1>/);
-    for (const text of [/photo/i, /30 days/, /Stripe/, /Gemini/, /Brevo/, /Prodigi/, /Neon/, /Vercel/]) assert.match(html, text, String(text));
+    for (const text of [/photo/i, /30 days/, /Stripe/, /Gemini/, /Brevo/, /Prodigi/, /Neon/, /Cloudflare/]) assert.match(html, text, String(text));
     assert.match(html, /no cookies/i);
     for (const kind of ['visit', 'activate', 'checkout']) assert.match(html, new RegExp(`<code>${kind}</code>`), kind);
     assert.ok(html.includes(new URL(SIGNAL_ENDPOINT).host), 'names where the signals go');
@@ -270,6 +279,12 @@ describe('the visit beacon is loaded only on the production deployment', () => {
     for (const env of [{}, { VERCEL_ENV: 'preview' }, { VERCEL_ENV: 'development' }, { VERCEL_ENV: 'Production' }]) {
       assert.equal(depsFromEnv(env).beacon, false, JSON.stringify(env));
     }
+  });
+
+  test("the Worker's DEPLOY_ENV=production turns it on too, and wins over VERCEL_ENV", () => {
+    assert.equal(depsFromEnv({ DEPLOY_ENV: 'production' }).beacon, true);
+    assert.equal(depsFromEnv({ DEPLOY_ENV: 'preview', VERCEL_ENV: 'production' }).beacon, false);
+    assert.equal(depsFromEnv({ DEPLOY_ENV: 'Production' }).beacon, false);
   });
 
   test('on: public pages and previews load /beacon.js; off: no page does', async () => {

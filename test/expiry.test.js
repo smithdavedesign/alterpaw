@@ -1,10 +1,10 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
 import { PGlite } from '@electric-sql/pglite';
 import { makeApp, petRecord, petForm, generate, createPreview, SpyStore, DAY_MS } from './helpers.js';
 import { PgStore } from '../src/store.js';
 import { PHOTO_RETENTION_DAYS, previewStatus } from '../src/app.js';
+import { SCHEDULED_JOBS } from '../src/schedule.js';
 
 const NOW = new Date('2026-10-13T12:00:00Z');
 const daysAgo = (days, ms = 0) => new Date(NOW.getTime() - days * DAY_MS - ms);
@@ -250,10 +250,9 @@ describe('GET /jobs/expire-photos authorisation', () => {
 });
 
 describe('scheduling', () => {
-  test('vercel.json runs the job once a day (the most Vercel Hobby allows)', async () => {
-    const config = JSON.parse(await readFile(new URL('../vercel.json', import.meta.url), 'utf8'));
-    const cron = config.crons?.find((c) => c.path === '/jobs/expire-photos');
-    assert.ok(cron, 'cron entry for the job');
-    assert.match(cron.schedule, /^\d{1,2} \d{1,2} \* \* \*$/, 'daily');
+  test('a Cron Trigger runs the job once a day (src/schedule.js; wrangler.jsonc is checked in worker.test.js)', () => {
+    const crons = Object.entries(SCHEDULED_JOBS).filter(([, path]) => path === '/jobs/expire-photos');
+    assert.equal(crons.length, 1, 'cron entry for the job');
+    assert.match(crons[0][0], /^\d{1,2} \d{1,2} \* \* \*$/, 'daily');
   });
 });
