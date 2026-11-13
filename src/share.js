@@ -4,7 +4,8 @@
 //
 //   shareTree(pet, …)     → satori element tree (plain objects, no JSX); pure, so tests can read the text
 //   renderSharePng(pet, photo, { size, host }) → { png: Uint8Array, photoShown: boolean, photoProblem?: string }
-//   renderOgPng()         → the site's own 1200×630 link-preview image (go-live), no photo, no user text
+//   renderOgPng()         → the site's own 1200×630 link-preview image (go-live), no photo, no user text; drawn at
+//                           build time into assets/og.png (`npm run cf:build`), never per request
 //
 // The paid bundle (bundle.js) reuses the poster, the tree helpers, the fonts and the rasteriser from here.
 //

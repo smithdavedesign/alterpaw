@@ -1230,11 +1230,20 @@ The notes below are from the M4 run and still describe how the script works:
 **Cloudflare Worker (since 2026-11-08).** Vercel blocked the agent account on 2026-10-31 (every deployment
 answers 402), so alterpaw runs on a Worker: https://alterpaw.1426davejobs.workers.dev. Workers Paid, because a
 share image is 0.1–1 s of CPU and the free plan allows 10 ms; `limits.cpu_ms` is 30 s.
-- **Deploy.** `provision cloudflare deploy alterpaw "$PWD"` from a checkout of main. No build step: wrangler
-  bundles `src/worker.js` (about 1.8 MB gzipped). Secrets: `provision cloudflare secret alterpaw DATABASE_URL`
-  and `GOOGLE_API_KEY`; the optional ones (Stripe, Brevo, Prodigi, `CRON_SECRET`) the same way.
+- **Deploy.** `npm ci && npm run cf:build`, then `provision cloudflare deploy alterpaw "$PWD"` from a checkout of
+  main. `cf:build` only redraws the link-preview image (`assets/og.png`, committed and bundled), so a deploy
+  that skips it still works; wrangler bundles `src/worker.js` (about 1.9 MiB gzipped, under the free plan's
+  3 MiB). Secrets: `provision cloudflare secret alterpaw DATABASE_URL` and `GOOGLE_API_KEY`; the optional ones
+  (`STRIPE_PAYMENT_LINK`, Stripe's keys, Brevo, Prodigi, `CRON_SECRET`) the same way. LAUNCH-READY.md lists
+  every value the Worker reads.
+- **Buy button (go-live, 2026-11-13).** `STRIPE_PAYMENT_LINK` (a $9 Stripe Payment Link, set on the Worker by
+  `provision stripe alterpaw … --host cloudflare`) is read on every page view. When `STRIPE_SECRET_KEY` isn't
+  set, "Unlock for $9" links to it with `?client_reference_id=<slug>`. A webhook (`STRIPE_WEBHOOK_SECRET`) then
+  unlocks that preview when the session has `payment_link` set and is exactly $9 in USD. Without the webhook,
+  unlock by hand (Operations, "Unlock a preview by hand"; the slug is the payment's client reference in Stripe).
 - **Settings.** `wrangler.jsonc` vars: `SITE_HOST` (canonical URLs, robots.txt, sitemap) and
-  `DEPLOY_ENV=production` (the visit beacon). Both win over Vercel's own variables (`src/deps.js`).
+  `DEPLOY_ENV=production` (the visit beacon). Both win over Vercel's own variables (`src/deps.js`). Both are
+  read by the server at request time, so the build bakes nothing in.
 - **Rendering on a Worker.** A Worker can't read files or compile wasm at run time, so:
   - resvg's wasm, satori's layout wasm and the fonts are imported in `src/worker.js` and bundled at deploy;
     `setAssetReader` hands them to `share.js`, which looks them up by file name. share.js now uses
@@ -1415,8 +1424,9 @@ Run these in the Neon SQL editor. They're plain SQL, so you never need the conne
   days anyway. The log names payments to refund:
   - `payment: … is a second payment, refund it in Stripe` (someone paid twice);
   - `… names no valid preview` or `… is for unknown preview` (should never happen).
-- **Unlock a preview by hand** (e.g. paid by other means):
+- **Unlock a preview by hand** (e.g. paid by other means, or through the Payment Link with no webhook set up):
   `UPDATE pets SET paid_at = now(), stripe_session = 'manual' WHERE slug = '…' AND paid_at IS NULL;`
+  A Payment Link payment shows the slug as its "client reference ID" in the Stripe dashboard.
 - **Give a buyer a second rewrite:** `UPDATE pets SET regenerated_at = NULL WHERE slug = '…';`
 - **Reported previews:**
   `SELECT slug, name, report_count, created_at FROM pets WHERE report_count > 0 ORDER BY report_count DESC;`

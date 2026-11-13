@@ -1,6 +1,8 @@
 {
-  // The alterpaw Worker on Cloudflare (Workers Paid, for the image rendering's CPU):
-  // `provision cloudflare deploy alterpaw "$PWD"`. No build step: wrangler bundles src/worker.js at deploy.
+  // The alterpaw Worker on Cloudflare (Workers Paid, for the image rendering's CPU; see "limits" below):
+  // `npm ci && npm run cf:build`, then `provision cloudflare deploy alterpaw "$PWD"`. There's no "build" section
+  // (the deploy broker runs no repo commands): wrangler bundles src/worker.js at deploy. cf:build only redraws
+  // assets/og.png, which is committed, so a deploy without it works too.
   "name": "alterpaw",
   "main": "src/worker.js",
   "compatibility_date": "2026-10-15",
@@ -18,9 +20,13 @@
     "import.meta.url": "\"file:///bundle/src/share.js\"",
     "self.location.href": "\"file:///bundle/\""
   },
-  // The renderers' wasm is bundled as compiled modules (wrangler's default for .wasm); the fonts as bytes.
-  "rules": [{ "type": "Data", "globs": ["**/*.woff"], "fallthrough": false }],
-  // A share image is 0.1 to 1 s of CPU, the paid bundle's four print-size cards about 3 s.
+  // The renderers' wasm is bundled as compiled modules (wrangler's default for .wasm); the fonts and the
+  // link-preview image drawn at build time (assets/og.png) as bytes.
+  "rules": [{ "type": "Data", "globs": ["**/*.woff", "**/*.png"], "fallthrough": false }],
+  // A share image is 0.1 to 1 s of CPU, the paid bundle's four print-size cards about 3 s. They're drawn from the
+  // buyer's own photo, so they can't be made at build time, and the free plan's 10 ms per request can't draw them:
+  // hence Workers Paid (David's choice, 2026-11-08). Everything else keeps to the free plan's rules: the site's
+  // own share image is drawn at build time, the bundle is under 3 MiB gzipped, Neon is reached over HTTP.
   "limits": { "cpu_ms": 30000 },
   "vars": {
     // The canonical origin for the search and sharing tags, robots.txt and the sitemap (a custom domain goes here).
@@ -31,8 +37,9 @@
     // Flash-Lite answers in a few seconds, as on squadwrap (#7) and pettycourt.
     "LLM_MODEL": "gemini-flash-lite-latest"
   },
-  // Secrets: `provision cloudflare secret alterpaw DATABASE_URL` and GOOGLE_API_KEY. Stripe, Brevo, Prodigi
-  // and CRON_SECRET are optional (src/deps.js).
+  // Secrets: `provision cloudflare secret alterpaw DATABASE_URL` and GOOGLE_API_KEY. STRIPE_PAYMENT_LINK (the Buy
+  // button; `provision stripe alterpaw … --host cloudflare` sets it), STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET,
+  // Brevo, Prodigi and CRON_SECRET are optional (src/deps.js; LAUNCH-READY.md lists them all).
   // The daily jobs (src/schedule.js): photo deletion at 04:00 UTC, gifts at 16:00 UTC.
   "triggers": { "crons": ["0 4 * * *", "0 16 * * *"] },
   "workers_dev": true,

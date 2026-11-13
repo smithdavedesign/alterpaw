@@ -1,14 +1,15 @@
 // Screenshot proof for the README: `npm run screenshots` (not part of `npm test`).
 // Starts the dev server (scripts/dev.js) on a free port with the service variables removed, so previews live
-// in memory, the canned demo writer is used, and Stripe, Brevo and Prodigi are the dev server's local stand-ins
-// (so the Buy button shows, as it does once Stripe is configured): no database, no model call, no secrets, no
-// payment, no email, no visit beacon (not a production deployment, and Playwright sets navigator.webdriver).
+// in memory and the canned demo writer is used: no database, no model call, no secrets, no payment, no email, no
+// visit beacon (not a production deployment, and Playwright sets navigator.webdriver). STRIPE_PAYMENT_LINK gets a
+// placeholder (https://example.com/pay), so the Buy button shows as it will once the real link is set; nothing is
+// clicked through to it.
 // Then drives Chromium through the core action with a sample dog (drawn below, so no real photo or person is
 // involved), at desktop size (1280×800) and on an iPhone 13, viewport only:
 //   home-desktop      the start page with the form filled in
 //   home-mobile       the end of the form on a phone: the submit button and the footer's Privacy and Terms links
 //   preview-desktop   the result: the free, watermarked preview's cards
-//   preview-mobile    the result on a phone, at the $9 offer: the "Unlock for $9" Buy button and the gift option
+//   preview-mobile    the result on a phone, at the $9 offer: the "Unlock for $9" Buy button (the Payment Link)
 //   share-*           the free preview's share image ("free preview" stamp), feed size and Stories size
 // Needs CHROMIUM_PATH pointing at an installed Chromium or Chrome; playwright-core never downloads a browser.
 import { spawn } from 'node:child_process';
@@ -33,14 +34,20 @@ const SERVICE_VARS = [
   'CRON_SECRET',
   'STRIPE_SECRET_KEY',
   'STRIPE_WEBHOOK_SECRET',
+  'STRIPE_PAYMENT_LINK',
   'BREVO_API_KEY',
   'EMAIL_FROM',
   'PRODIGI_API_KEY',
   'PRODIGI_ENV',
-  // Vercel's own: a shell that has them would turn the visit beacon on or move the canonical URLs.
+  // The Worker's and Vercel's: a shell that has them would turn the visit beacon on or move the canonical URLs.
+  'DEPLOY_ENV',
+  'SITE_HOST',
   'VERCEL_ENV',
   'VERCEL_PROJECT_PRODUCTION_URL',
 ];
+
+// Shows the Buy button. A placeholder, never a real link: the run doesn't pay.
+const PAYMENT_LINK = 'https://example.com/pay';
 
 const SAMPLE_PET = {
   name: 'Biscuit',
@@ -104,6 +111,7 @@ async function startApp() {
   const port = await freePort();
   const env = { ...process.env, PORT: String(port) };
   for (const name of SERVICE_VARS) delete env[name];
+  env.STRIPE_PAYMENT_LINK = PAYMENT_LINK;
   const child = spawn(process.execPath, ['scripts/dev.js'], { cwd: ROOT, env, stdio: ['ignore', 'ignore', 'inherit'] });
   const base = `http://localhost:${port}`;
   const deadline = Date.now() + START_TIMEOUT_MS;
@@ -196,8 +204,10 @@ async function captureFlow(browser, base, photo, view) {
     await imagesLoaded(page);
     const previewUrl = page.url();
     if ((await page.locator('.card .watermark').count()) !== 4) throw new Error('the free preview should show 4 watermarked cards');
-    const buy = page.locator('form[action="/checkout"][data-checkout] button[type="submit"]');
+    const slug = new URL(previewUrl).pathname.split('/').pop();
+    const buy = page.locator('a.pay[data-checkout]');
     if (!(await buy.isVisible()) || !/Unlock for \$9/.test(await buy.textContent())) throw new Error('no visible "Unlock for $9" Buy button');
+    if ((await buy.getAttribute('href')) !== `${PAYMENT_LINK}?client_reference_id=${slug}`) throw new Error('the Buy button does not go to the Payment Link for this preview');
     await footerLinks(page);
     await page.evaluate((at) => {
       if (at === 'top') window.scrollTo(0, 0);

@@ -11,6 +11,8 @@
 //                   (src/worker.js); on Vercel, Vercel Cron sent it
 //   STRIPE_SECRET_KEY      Stripe secret (or restricted) key; without it checkout answers 503
 //   STRIPE_WEBHOOK_SECRET  signing secret of the Stripe webhook endpoint; without it the webhook answers 503
+//   STRIPE_PAYMENT_LINK    a $9 Stripe Payment Link (go-live): the Buy button when STRIPE_SECRET_KEY isn't set.
+//                          Read on every page view, not here, so the Worker secret takes effect without a rebuild
 //   BREVO_API_KEY + EMAIL_FROM  Brevo v3 API key and its verified sender address; without both, no gifts (M4)
 //   PRODIGI_API_KEY        Prodigi Print API key; without it, no printed posters (M4)
 //   PRODIGI_ENV            'live' sends print orders to Prodigi's live API; anything else uses its sandbox
@@ -21,7 +23,7 @@
 import { neon } from '@neondatabase/serverless';
 import { createChatCompletion } from './character.js';
 import { createBrevoSender } from './email.js';
-import { createStripeCheckout } from './payments.js';
+import { createStripeCheckout, paymentLinkFrom } from './payments.js';
 import { createProdigiPrinter } from './print.js';
 import { PgStore } from './store.js';
 import { siteUrlFromEnv } from './site.js';
@@ -94,6 +96,7 @@ export function depsFromEnv(env, { fetch = globalThis.fetch } = {}) {
     cronSecret: env.CRON_SECRET || '',
     checkout: env.STRIPE_SECRET_KEY ? createStripeCheckout({ secretKey: env.STRIPE_SECRET_KEY, fetch }) : null,
     webhookSecret: env.STRIPE_WEBHOOK_SECRET || '',
+    paymentLink: () => paymentLinkFrom(env.STRIPE_PAYMENT_LINK),
     sendEmail:
       env.BREVO_API_KEY && isEmailAddress(env.EMAIL_FROM) ? createBrevoSender({ apiKey: env.BREVO_API_KEY, from: env.EMAIL_FROM, fetch }) : null,
     printOrder: env.PRODIGI_API_KEY

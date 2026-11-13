@@ -10,6 +10,7 @@
   "scripts": {
     "test": "node --test \"test/*.test.js\"",
     "dev": "node scripts/dev.js",
+    "cf:build": "node scripts/build-og.mjs",
     "screenshots": "node scripts/screenshots.mjs"
   },
   "dependencies": {

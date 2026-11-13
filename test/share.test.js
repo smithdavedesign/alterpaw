@@ -272,5 +272,6 @@ describe('deploy bundle', () => {
       const file = relative(base, fileURLToPath(url)).split(sep).join('/');
       assert.ok(fileList.has(file), `${file} is in the function bundle`);
     }
+    assert.ok(fileList.has('assets/og.png'), 'the link-preview image drawn at build time is in the function bundle');
   });
 });

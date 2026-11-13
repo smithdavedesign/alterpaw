@@ -6,6 +6,11 @@
 //     Worker, so it needs no CRON_SECRET: without one, each isolate makes its own random secret, which only
 //     its own scheduled runs carry. /jobs/* over HTTP still answers only CRON_SECRET, if one is set.
 //   - The report counter keys on CF-Connecting-IP, which Cloudflare sets itself (app.js, clientIp).
+//   - The link-preview image (/og.png) is drawn at build time (`npm run cf:build`, assets/og.png) and bundled
+//     as bytes, so no request draws it.
+//   - Settings are read from the Worker's env. Secrets and vars belong to a Worker version: setting one (e.g.
+//     `provision stripe … --host cloudflare` for STRIPE_PAYMENT_LINK) deploys a new version, whose isolates
+//     build the app afresh, so nothing needs rebuilding. STRIPE_PAYMENT_LINK is read on each page view anyway.
 // First, before satori loads: its text shaper's wasm, compiled at deploy (src/harfbuzz-wasm.js).
 import './harfbuzz-wasm.js';
 import resvgWasm from '@resvg/resvg-wasm/index_bg.wasm';
@@ -21,6 +26,7 @@ import slabCyrillic400 from '@fontsource/roboto-slab/files/roboto-slab-cyrillic-
 import slabCyrillic700 from '@fontsource/roboto-slab/files/roboto-slab-cyrillic-700-normal.woff';
 import slabGreek400 from '@fontsource/roboto-slab/files/roboto-slab-greek-400-normal.woff';
 import slabGreek700 from '@fontsource/roboto-slab/files/roboto-slab-greek-700-normal.woff';
+import ogPng from '../assets/og.png';
 import { createApp } from './app.js';
 import { depsFromEnv } from './deps.js';
 import { runScheduledJob } from './schedule.js';
@@ -56,7 +62,10 @@ function appFor(env) {
   if (!built) {
     const deps = depsFromEnv(env);
     const cronSecret = deps.cronSecret || randomSecret();
-    built = { cronSecret, app: createApp({ ...deps, cronSecret, clientIpHeader: 'cf-connecting-ip' }) };
+    built = {
+      cronSecret,
+      app: createApp({ ...deps, cronSecret, clientIpHeader: 'cf-connecting-ip', loadOg: async () => new Uint8Array(ogPng) }),
+    };
   }
   return built;
 }

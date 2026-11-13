@@ -9,7 +9,7 @@
 //     cronSecret  — bearer token the scheduler sends to /jobs/*; unset means the jobs refuse to run
 //     uploadSweepWaitMs — how long an upload waits for its photo-deletion sweep before answering anyway
 //     checkout    — ({ slug, successUrl, cancelUrl }) => Promise<{ id, url }>, a Stripe Checkout Session
-//                   (payments.js); null means payments aren't configured
+//                   (payments.js); null means Checkout isn't configured (the Buy button may be a Payment Link)
 //     webhookSecret — the Stripe webhook endpoint's signing secret; unset means the webhook refuses events
 //     renderBundle — (pet, photo) => Promise<{ files: [{ name, bytes }], photoShown, photoProblem? }> (bundle.js,
 //                   loaded on first use)
@@ -21,10 +21,13 @@
 //     siteUrl     — the canonical origin for the search and sharing tags, robots.txt and the sitemap
 //                   ('https://host', from VERCEL_PROJECT_PRODUCTION_URL); null means the request's origin
 //     beacon      — load the RepoHQ visit beacon on the pages (true on the production deployment only)
-//     renderOg    — () => Promise<Uint8Array>, the 1200×630 link-preview PNG (share.js, loaded on first use)
+//     loadOg      — () => Promise<Uint8Array>, the 1200×630 link-preview PNG drawn at build time (assets/og.png)
+//     paymentLink — () => URL string or null, the $9 Stripe Payment Link (STRIPE_PAYMENT_LINK), asked on every
+//                   page view; used for the Buy button when `checkout` is null
 //   Cloudflare Worker (src/worker.js):
 //     clientIpHeader — a request header the host sets to the client's address ('cf-connecting-ip'); null means
 //                   the last X-Forwarded-For entry (clientIp)
+import { readFile } from 'node:fs/promises';
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { csrf } from 'hono/csrf';
@@ -42,6 +45,7 @@ import {
   PRICE_CENTS,
   PRODUCTS,
   CURRENCY,
+  paymentLinkFor,
 } from './payments.js';
 import { EmailError } from './email.js';
 import { PrintError } from './print.js';
@@ -226,8 +230,10 @@ async function readForm(c) {
 const renderShareLazily = async (...args) => (await import('./share.js')).renderSharePng(...args);
 const renderBundleLazily = async (...args) => (await import('./bundle.js')).renderBundle(...args);
 const renderPrintLazily = async (...args) => (await import('./bundle.js')).renderPrintPoster(...args);
-const renderOgLazily = async () => (await import('./share.js')).renderOgPng();
-// The link-preview image never changes within a deployment; a day keeps unfurlers and the CDN from re-rendering it.
+// The link-preview image is drawn at build time (`npm run cf:build`, scripts/build-og.mjs) and committed, so a
+// request only reads it: from disk on Node, from the Worker's bundle there (src/worker.js passes it in).
+const readOgFile = async () => new Uint8Array(await readFile(OG_IMAGE.file));
+// The link-preview image never changes within a deployment; a day keeps unfurlers and the CDN from refetching it.
 const OG_CACHE = 'public, max-age=86400';
 
 // Error text from drivers can quote a URL with its credentials (Neon echoes a malformed connection string).
@@ -265,14 +271,13 @@ export function createApp({
   renderPrint = renderPrintLazily,
   siteUrl = null,
   beacon = false,
-  renderOg = renderOgLazily,
+  loadOg = readOgFile,
+  paymentLink = () => null,
   clientIpHeader = null,
 }) {
   const app = new Hono();
   // What the pages need to know about the site: the canonical origin and whether to load the visit beacon.
   const site = (c) => ({ origin: siteUrl ?? new URL(c.req.url).origin, beacon });
-  // The bundle's Buy button shows only when Checkout is configured, like the gift and print forms.
-  const payments = Boolean(checkout);
   // Each M4 product is offered only when everything it needs is configured, so nothing is sold that can't be
   // delivered: a gift needs Stripe, email and the scheduler; a print needs Stripe and the printer.
   const giftsMissing = () =>
@@ -336,6 +341,21 @@ export function createApp({
     return closesAt - at < CHECKOUT_MIN_OPEN_MS ? null : new Date(closesAt);
   }
   const tooLateToBuy = (c) => failWith(c, 410, 'This preview expires within the hour, too soon to buy anything for it.', PROBLEMS.expired.page);
+
+  // How an unpaid preview's bundle can be bought, decided on each page view (the views' `buy`):
+  //   { via: 'checkout' }     STRIPE_SECRET_KEY: the form to /checkout. Its session names the preview and Stripe
+  //                           brings the buyer back to it, so it wins when both are set.
+  //   { via: 'link', href }   else STRIPE_PAYMENT_LINK, with the preview in client_reference_id. Asked for now,
+  //                           not at start-up, so the Worker secret shows the button without a rebuild.
+  //   { via: 'closed' }       the link, but under an hour left: it goes straight to Stripe, past the check that
+  //                           /checkout makes (tooLateToBuy), so it isn't offered.
+  //   null                    neither: no Buy button, like the gift and print forms without their keys.
+  function buyOption(pet) {
+    if (checkout) return { via: 'checkout' };
+    const link = paymentLink();
+    if (!link) return null;
+    return checkoutClosesAt(pet) ? { via: 'link', href: paymentLinkFor(link, pet.slug) } : { via: 'closed' };
+  }
 
   // Creates the Checkout Session and sends the buyer there (303; JSON clients get the URL). Nothing is marked
   // paid here: only the signed webhook does that. `order` ({ product, orderId }) is set for gifts and prints.
@@ -532,10 +552,10 @@ export function createApp({
     c.body(sitemapXml(site(c).origin), 200, { 'content-type': 'application/xml; charset=utf-8', 'cache-control': ASSET_CACHE }),
   );
 
-  // Rendered once per instance (~0.5 s of CPU); a failed render is forgotten so the next request retries.
+  // Drawn at build time, read once per instance; a failed read is forgotten so the next request retries.
   let ogImage = null;
   app.get(OG_IMAGE.path, async (c) => {
-    ogImage ??= renderOg().catch((err) => {
+    ogImage ??= loadOg().catch((err) => {
       ogImage = null;
       throw err;
     });
@@ -618,7 +638,7 @@ export function createApp({
         orders: await store.listOrders(pet.slug),
         gift: giftOffer(c, pet),
         prints: !printsMissing(),
-        payments,
+        buy: buyOption(pet),
         site: site(c),
       }),
     );
@@ -668,7 +688,7 @@ export function createApp({
     if (!pet.paidAt) {
       return wantsJson(c)
         ? c.json({ error: 'The bundle unlocks once it is paid for.', checkout: '/checkout' }, 402)
-        : c.html(paymentRequiredPage(pet, { payments, site: site(c) }), 402);
+        : c.html(paymentRequiredPage(pet, { buy: buyOption(pet), site: site(c) }), 402);
     }
     const headers = {
       'content-type': 'application/zip',
@@ -700,7 +720,7 @@ export function createApp({
     const closesAt = checkoutClosesAt(pet);
     if (!closesAt) return tooLateToBuy(c);
     if (!checkout) {
-      logger.error('checkout: STRIPE_SECRET_KEY is not set, so payments are off');
+      logger.error('checkout: STRIPE_SECRET_KEY is not set, so Stripe Checkout is off');
       return failWith(c, 503, 'Payments are not switched on yet.', () => paymentsUnavailablePage({ retry: false }));
     }
     return startCheckout(c, pet, closesAt);
@@ -765,7 +785,7 @@ export function createApp({
     const { pet, problem } = await lookup(input.slug);
     if (problem) return problemResponse(c, problem);
     if (!pet.paidAt) {
-      return failWith(c, 402, 'The printed poster comes with the paid bundle. Unlock the bundle first.', () => paymentRequiredPage(pet, { print: true, payments, site: site(c) }));
+      return failWith(c, 402, 'The printed poster comes with the paid bundle. Unlock the bundle first.', () => paymentRequiredPage(pet, { print: true, buy: buyOption(pet), site: site(c) }));
     }
     const missing = printsMissing();
     if (missing) {
@@ -848,9 +868,12 @@ export function createApp({
       if (!PAID_EVENT_TYPES.has(event.type) || session?.payment_status !== 'paid') return c.json({ received: true });
 
       const sessionId = String(session.id);
-      // metadata.slug is set only by our own session request. client_reference_id is not trusted: on a
-      // Payment Link (should the account ever have one) the buyer sets it from the URL.
-      const slug = session.metadata?.slug;
+      // metadata.slug is set only by our own session request. A session that a Payment Link made (go-live,
+      // STRIPE_PAYMENT_LINK) has `payment_link` set and the preview in client_reference_id, copied from the Buy
+      // link's URL. The buyer can edit that URL, so it's trusted only to say which preview their payment is for,
+      // and only at the bundle's exact price (checked below): a tip jar or any other link on the account unlocks
+      // nothing. On any other session client_reference_id is ignored.
+      const slug = session.metadata?.slug ?? (typeof session.payment_link === 'string' ? session.client_reference_id : undefined);
       if (typeof slug !== 'string' || !SLUG_PATTERN.test(slug)) {
         logger.error(`payment: paid session ${sessionId} names no valid preview; refund it in Stripe`);
         return c.json({ received: true });
@@ -962,7 +985,7 @@ export function createApp({
     const { pet, problem } = await lookup(input.slug);
     if (problem) return problemResponse(c, problem);
     const used = () => failWith(c, 409, "This preview's one rewrite is already used.", () => rewriteUsedPage(pet));
-    if (!pet.paidAt) return failWith(c, 402, 'The rewrite comes with the paid bundle.', () => paymentRequiredPage(pet, { payments, site: site(c) }));
+    if (!pet.paidAt) return failWith(c, 402, 'The rewrite comes with the paid bundle.', () => paymentRequiredPage(pet, { buy: buyOption(pet), site: site(c) }));
     if (pet.regeneratedAt) return used();
 
     let character;

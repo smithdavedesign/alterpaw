@@ -4,7 +4,8 @@
 // can be clicked through offline. Set the variables in your shell to use the real services.
 // With no STRIPE_SECRET_KEY and the in-memory store, "Unlock" marks the preview paid on the spot (no Stripe),
 // so the bundle and the rewrite can be tried offline too. Gifts and prints (M4) pay the same way, through a
-// webhook event the dev server signs itself, so the real fulfilment code runs.
+// webhook event the dev server signs itself, so the real fulfilment code runs. With STRIPE_PAYMENT_LINK set
+// instead, "Unlock" is that link, as in production (and gifts and prints are off, as they are there without a key).
 // With no BREVO_API_KEY/EMAIL_FROM, gift emails are printed here instead of sent; with no PRODIGI_API_KEY, print
 // orders are printed instead of placed. Gift delivery runs every minute in-process.
 import { createHmac, randomBytes } from 'node:crypto';
@@ -109,7 +110,9 @@ export function createDevApp(env, { log = console.log } = {}) {
   if (!env.DATABASE_URL) {
     deps.store = new MemoryStore();
     notes.push('No DATABASE_URL: previews are kept in memory.');
-    if (!env.STRIPE_SECRET_KEY) {
+    if (!env.STRIPE_SECRET_KEY && deps.paymentLink()) {
+      notes.push('STRIPE_PAYMENT_LINK is set: "Unlock" goes to that link, as in production.');
+    } else if (!env.STRIPE_SECRET_KEY) {
       deps.webhookSecret ||= randomBytes(24).toString('hex');
       const secret = deps.webhookSecret;
       deps.checkout = devCheckout(deps.store, { fulfil: (session) => postSignedSession(app, secret, session, log) });

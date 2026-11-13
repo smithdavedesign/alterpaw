@@ -4,6 +4,8 @@
 //   createStripeCheckout({ secretKey, fetch }) → ({ slug, successUrl, cancelUrl, expiresAt?, product?, orderId? })
 //                                                 => Promise<{ id, url }>
 //   verifyStripeEvent(payload, signatureHeader, secret, now) → Promise<event>, or throws SignatureError
+//   paymentLinkFrom(value) → the STRIPE_PAYMENT_LINK URL if it's usable, else null
+//   paymentLinkFor(link, slug) → that link for one preview (client_reference_id=<slug>)
 //
 // The secret key is only ever sent in the Authorization header. Errors carry a status code at most, never
 // Stripe's error text (it can quote the key) or the key itself.
@@ -120,6 +122,30 @@ function originOf(value) {
   } catch {
     return null;
   }
+}
+
+// Go-live: a Stripe Payment Link for the $9 bundle (STRIPE_PAYMENT_LINK, https://buy.stripe.com/…), the way to
+// sell without a secret key in the app. Only an https URL without credentials is used: anything else (a typo, a
+// pasted key) hides the Buy button instead of sending buyers somewhere odd.
+const MAX_PAYMENT_LINK_LENGTH = 2048;
+export function paymentLinkFrom(value) {
+  if (typeof value !== 'string' || value.length > MAX_PAYMENT_LINK_LENGTH) return null;
+  let url;
+  try {
+    url = new URL(value.trim());
+  } catch {
+    return null;
+  }
+  return url.protocol === 'https:' && url.hostname && !url.username && !url.password ? url.href : null;
+}
+
+// Stripe copies client_reference_id from a Payment Link's URL into the Checkout Session it makes, so the webhook
+// knows which preview was paid for (app.js). The buyer can edit the URL, which only changes which preview their
+// own $9 unlocks.
+export function paymentLinkFor(link, slug) {
+  const url = new URL(link);
+  url.searchParams.set('client_reference_id', slug);
+  return url.href;
 }
 
 const encoder = new TextEncoder();

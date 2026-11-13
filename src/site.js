@@ -2,7 +2,7 @@
 //   PUBLIC_PAGES      the indexable pages, each with its own title and description; the sitemap lists them
 //   siteUrlFromEnv    the canonical origin, from SITE_HOST (wrangler.jsonc) or Vercel's VERCEL_PROJECT_PRODUCTION_URL
 //                     (null: use the request's)
-//   robotsTxt, sitemapXml, softwareApplication (JSON-LD), OG_IMAGE (drawn by share.js)
+//   robotsTxt, sitemapXml, softwareApplication (JSON-LD), OG_IMAGE (drawn by share.js at build time)
 //   BEACON_SCRIPT     /beacon.js; the page loads it on the production deployment only (app.js)
 // Only fixed text and the origin go into any of this, never user text.
 import { PRODUCTS } from './payments.js';
@@ -32,9 +32,12 @@ export const PUBLIC_PAGES = {
   },
 };
 
-// The link-preview image (Open Graph, Twitter), drawn with code in share.js.
+// The link-preview image (Open Graph, Twitter), drawn with code (renderOgPng in share.js) at build time:
+// `npm run cf:build` (scripts/build-og.mjs) writes `file`, which is committed, so no request ever draws it.
+// test/launch.test.js fails if the file no longer matches the drawing code.
 export const OG_IMAGE = {
   path: '/og.png',
+  file: new URL('../assets/og.png', import.meta.url),
   width: 1200,
   height: 630,
   alt: "alterpaw: a wanted poster for your pet, with the headline \"Your pet's secret life, exposed.\"",
@@ -74,7 +77,13 @@ export function softwareApplication(origin) {
     operatingSystem: 'Any (web browser)',
     offers: [
       { '@type': 'Offer', name: 'Watermarked preview', price: '0', priceCurrency: 'USD' },
-      { '@type': 'Offer', name: 'The clean bundle', price: dollars(PRODUCTS.bundle.cents), priceCurrency: 'USD' },
+      {
+        '@type': 'Offer',
+        name: 'The clean bundle',
+        description: 'Paid once, no subscription: four high-res images and a printable PDF, no watermark.',
+        price: dollars(PRODUCTS.bundle.cents),
+        priceCurrency: 'USD',
+      },
     ],
   };
 }
@@ -84,7 +93,8 @@ export function softwareApplication(origin) {
 //   visit     once per browser session (sessionStorage), on every page that loads this script
 //   activate  once per browser (localStorage), the first time a preview is made (upload.js dispatches
 //             "alterpaw:activate" when POST /generate succeeds)
-//   checkout  each time a pay form (data-checkout: Unlock, Buy it as a gift, Order the poster) is submitted
+//   checkout  each time a pay form (form[data-checkout]: Unlock, Buy it as a gift, Order the poster) is submitted,
+//             or the Payment Link's Unlock button (a[data-checkout]) is clicked
 export const SIGNAL_ENDPOINT = 'https://idea-factory.1426davejobs.workers.dev/api/ideas/signal';
 export const SIGNAL_ORIGIN = new URL(SIGNAL_ENDPOINT).origin;
 export const SIGNAL_SLUG = 'alterpaw';
@@ -162,6 +172,15 @@ function beaconScript(endpoint, slug) {
     function (event) {
       var form = event.target;
       if (form && typeof form.hasAttribute === 'function' && form.hasAttribute('data-checkout')) send('checkout');
+    },
+    true,
+  );
+  // Links only: a pay form's button is counted by its submit above.
+  document.addEventListener(
+    'click',
+    function (event) {
+      var target = event.target;
+      if (target && typeof target.closest === 'function' && target.closest('a[data-checkout]')) send('checkout');
     },
     true,
   );

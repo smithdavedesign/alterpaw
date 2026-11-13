@@ -245,6 +245,20 @@ describe('depsFromEnv', () => {
     assert.ok(lines.some((l) => l.includes(`/prints/${order.id}/poster.png`)));
   });
 
+  test('with STRIPE_PAYMENT_LINK the dev server shows the Buy link, as production does, instead of its local checkout', async () => {
+    const { createDevApp } = await import('../scripts/dev.js');
+    const link = 'https://example.com/pay';
+    const { app, notes } = createDevApp({ STRIPE_PAYMENT_LINK: link }, { log: () => {} });
+    const { slug } = await (await app.request('/generate', { method: 'POST', body: petForm() })).json();
+    const html = await (await app.request(`/p/${slug}`)).text();
+    assert.ok(html.includes(`href="${link}?client_reference_id=${slug}"`));
+    assert.doesNotMatch(html, /action="\/checkout"/);
+    assert.ok(notes.some((n) => n.includes('STRIPE_PAYMENT_LINK')));
+    const local = createDevApp({}, { log: () => {} });
+    const { slug: other } = await (await local.app.request('/generate', { method: 'POST', body: petForm() })).json();
+    assert.match(await (await local.app.request(`/p/${other}`)).text(), /action="\/checkout"/, 'without it, the local checkout as before');
+  });
+
   test('importing the production entry builds an app without throwing', async () => {
     const mod = await import('../src/index.js');
     assert.equal(typeof mod.default.fetch, 'function');

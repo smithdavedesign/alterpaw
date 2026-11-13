@@ -45,8 +45,15 @@ describe('wrangler.jsonc', async () => {
     assert.equal(config.keep_names, false);
   });
 
-  test('bundles the fonts as bytes', () => {
+  test('bundles the fonts and the prebuilt share image as bytes', () => {
     assert.ok(config.rules.some((rule) => rule.type === 'Data' && rule.globs.includes('**/*.woff')));
+    assert.ok(config.rules.some((rule) => rule.type === 'Data' && rule.globs.includes('**/*.png')));
+  });
+
+  test('keeps the Payment Link out of vars: it is a secret, read per request (STRIPE_PAYMENT_LINK)', () => {
+    for (const name of ['STRIPE_PAYMENT_LINK', 'STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET', 'DATABASE_URL', 'GOOGLE_API_KEY']) {
+      assert.ok(!Object.hasOwn(config.vars, name), name);
+    }
   });
 
   test('is production on its own workers.dev host: canonical URLs there, visit beacon on', () => {
@@ -68,6 +75,14 @@ describe('src/worker.js', () => {
       assert.match(worker, new RegExp(`from '${pkgPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}'`), `imports ${pkgPath}`);
       assert.match(worker, new RegExp(`'${name.replace(/\./g, '\\.')}':`), `maps ${name}`);
     }
+  });
+
+  test('serves the share image drawn at build time (assets/og.png), bundled, never drawn per request', async () => {
+    const worker = await source('src/worker.js');
+    assert.match(worker, /^import (\w+) from '\.\.\/assets\/og\.png';$/m);
+    const name = worker.match(/^import (\w+) from '\.\.\/assets\/og\.png';$/m)[1];
+    assert.match(worker, new RegExp(`loadOg: async \\(\\) => new Uint8Array\\(${name}\\)`));
+    assert.doesNotMatch(worker, /renderOg/);
   });
 
   test('loads the harfbuzz substitute before anything that imports satori', async () => {
