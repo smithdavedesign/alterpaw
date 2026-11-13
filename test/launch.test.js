@@ -2,9 +2,11 @@
 // privacy and terms pages, the Buy button only when payments are on, and where the visit beacon is loaded.
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { makeApp, createPreview, fakeCheckout, petForm } from './helpers.js';
+import { readFile } from 'node:fs/promises';
+import { makeApp, createPreview, fakeCheckout, petForm, petRecord, DAY_MS } from './helpers.js';
 import { pngSize } from './png.js';
 import { depsFromEnv } from '../src/index.js';
+import { paymentLinkFrom, paymentLinkFor } from '../src/payments.js';
 import { PUBLIC_PAGES, OG_IMAGE, SIGNAL_ENDPOINT, ISSUES_URL, siteUrlFromEnv } from '../src/site.js';
 
 const ORIGIN = 'https://alterpaw.example';
@@ -75,7 +77,7 @@ describe('public pages: titles, descriptions, sharing tags, canonical URL and JS
       assert.ok(data.applicationCategory && data.operatingSystem);
       const offers = [data.offers].flat();
       assert.ok(offers.some((o) => o.price === '0' && o.priceCurrency === 'USD'), 'the free preview');
-      assert.ok(offers.some((o) => o.price === '9.00' && o.priceCurrency === 'USD'), 'the $9 bundle');
+      assert.ok(offers.some((o) => o.price === '9.00' && o.priceCurrency === 'USD' && /once/i.test(o.description)), 'the $9 bundle, paid once');
     }
   });
 
@@ -156,15 +158,8 @@ describe('robots.txt and sitemap.xml', () => {
 });
 
 describe('the share image', () => {
-  test('GET /og.png is a 1200×630 PNG drawn by the app, cacheable, and rendered once', async () => {
-    let renders = 0;
-    const { renderOgPng } = await import('../src/share.js');
-    const { app } = makeApp({
-      renderOg: async () => {
-        renders += 1;
-        return renderOgPng();
-      },
-    });
+  test('GET /og.png serves the 1200×630 PNG drawn at build time (assets/og.png), cacheable', async () => {
+    const { app } = makeApp();
     const res = await app.request('/og.png');
     assert.equal(res.status, 200);
     assert.equal(res.headers.get('content-type'), 'image/png');
@@ -172,24 +167,49 @@ describe('the share image', () => {
     const png = new Uint8Array(await res.arrayBuffer());
     assert.deepEqual(pngSize(png), { width: OG_IMAGE.width, height: OG_IMAGE.height });
     assert.deepEqual(pngSize(png), { width: 1200, height: 630 });
-    assert.equal((await app.request('/og.png')).status, 200);
-    assert.equal(renders, 1, 'the second request is served from memory');
+    assert.ok(Buffer.from(png).equals(await readFile(OG_IMAGE.file)), 'the committed file, byte for byte');
+  });
+
+  test('assets/og.png is what the drawing code makes now (after changing ogTree, run `npm run cf:build`)', async () => {
+    const { renderOgPng } = await import('../src/share.js');
+    const drawn = Buffer.from(await renderOgPng());
+    assert.ok(drawn.equals(await readFile(OG_IMAGE.file)), 'assets/og.png is stale: run `npm run cf:build` and commit it');
+  });
+
+  test('`npm run cf:build` draws it: the build script writes renderOgPng() to that file', async () => {
+    const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
+    assert.match(pkg.scripts['cf:build'], /\bnode scripts\/build-og\.mjs\b/);
+    const script = await readFile(new URL('../scripts/build-og.mjs', import.meta.url), 'utf8');
+    assert.match(script, /renderOgPng\(\)/);
+    assert.match(script, /writeFile\(OG_IMAGE\.file,/);
+  });
+
+  test('a request never draws it: the file is read once per instance', async () => {
+    let reads = 0;
+    const { app } = makeApp({
+      loadOg: async () => {
+        reads += 1;
+        return new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+      },
+    });
+    for (let i = 0; i < 3; i++) assert.equal((await app.request('/og.png')).status, 200);
+    assert.equal(reads, 1, 'later requests are served from memory');
   });
 
   test('other sites may embed it (Cross-Origin-Resource-Policy: cross-origin); everything else stays same-origin', async () => {
-    const { app } = makeApp({ renderOg: async () => new Uint8Array([0x89, 0x50, 0x4e, 0x47]) });
+    const { app } = makeApp({ loadOg: async () => new Uint8Array([0x89, 0x50, 0x4e, 0x47]) });
     assert.equal((await app.request('/og.png')).headers.get('cross-origin-resource-policy'), 'cross-origin');
     for (const path of ['/', '/styles.css', '/robots.txt']) {
       assert.equal((await app.request(path)).headers.get('cross-origin-resource-policy'), 'same-origin', path);
     }
   });
 
-  test('a failed render is a 500 and is retried on the next request', async () => {
+  test('a failed read is a 500 and is retried on the next request', async () => {
     let calls = 0;
     const { app } = makeApp({
-      renderOg: async () => {
+      loadOg: async () => {
         calls += 1;
-        if (calls === 1) throw new Error('fonts unavailable');
+        if (calls === 1) throw new Error('file unavailable');
         return new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
       },
     });
@@ -230,6 +250,7 @@ describe('/privacy', () => {
     assert.ok(html.includes(new URL(SIGNAL_ENDPOINT).host), 'names where the signals go');
     assert.match(html, /repohq:notrack/, 'how to switch it off');
     assert.ok(html.includes(`href="${ISSUES_URL}"`), 'contact through GitHub issues');
+    assert.match(html, /which preview you(?:'|&#39;)re paying for/, 'what the Buy link tells Stripe');
   });
 });
 
@@ -239,7 +260,7 @@ describe('/terms', () => {
     const { html } = await page(app, '/terms');
     assert.match(html, /<h1>Terms<\/h1>/);
     for (const heading of ['Refunds', 'No warranty', 'Contact']) assert.match(html, new RegExp(`<h2[^>]*>${heading}`), heading);
-    for (const text of [/\$9/, /\$29/, /30 days/, /parody/i, /gift/i, /printed poster/i, /United States/, /as is/i, /without warranty/i]) {
+    for (const text of [/\$9 \(US dollars\), paid once/, /\$29/, /30 days/, /14 days/, /full refund/, /parody/i, /gift/i, /printed poster/i, /United States/, /as is/i, /without warranty/i]) {
       assert.match(html, text, String(text));
     }
     assert.ok(html.includes(`href="${ISSUES_URL}"`));
@@ -248,28 +269,98 @@ describe('/terms', () => {
 });
 
 describe('the Buy button', () => {
-  test('is hidden when payments are not configured (no STRIPE_SECRET_KEY): a note instead, no pay form', async () => {
-    assert.equal(depsFromEnv({}).checkout, null, 'no key, no checkout');
-    const { app } = makeApp();
+  // A placeholder, as on the screenshot run; a real one is https://buy.stripe.com/… (David's, never in the repo).
+  const LINK = 'https://example.com/pay';
+  const buyLink = (slug) => `<a class="pay" href="${LINK}?client_reference_id=${slug}" target="_blank" rel="noopener" data-checkout>Unlock for $9</a>`;
+
+  test('is hidden when payments are not configured (no STRIPE_PAYMENT_LINK, no STRIPE_SECRET_KEY): a note instead', async () => {
+    const deps = depsFromEnv({});
+    assert.equal(deps.checkout, null, 'no key, no checkout');
+    assert.equal(deps.paymentLink(), null, 'no link');
+    const { app } = makeApp({ paymentLink: deps.paymentLink });
     const slug = await createPreview(app);
     for (const path of [`/p/${slug}`, `/p/${slug}/bundle.zip`]) {
       const { html } = await page(app, path);
       assert.doesNotMatch(html, /action="\/checkout"/, path);
+      assert.doesNotMatch(html, /class="pay"/, path);
       assert.doesNotMatch(html, /Unlock for \$9/, path);
       assert.match(html, /Payments aren(?:'|&#39;)t switched on yet/, path);
     }
   });
 
-  test('shows, marked for the checkout signal, when payments are configured', async () => {
+  test('with STRIPE_PAYMENT_LINK it links there, naming the preview, in a new tab, marked for the checkout signal', async () => {
+    const { app } = makeApp({ paymentLink: depsFromEnv({ STRIPE_PAYMENT_LINK: LINK }).paymentLink });
+    const slug = await createPreview(app);
+    for (const path of [`/p/${slug}`, `/p/${slug}/bundle.zip`]) {
+      const { html } = await page(app, path);
+      assert.ok(html.includes(buyLink(slug)), path);
+      assert.doesNotMatch(html, /action="\/checkout"/, path);
+      assert.doesNotMatch(html, /switched on yet/, path);
+      assert.match(html, /come back to this page/, `${path}: says where the bundle appears`);
+    }
+  });
+
+  test('STRIPE_PAYMENT_LINK is read when the page is served, so setting the Worker secret needs no rebuild', async () => {
+    const env = {};
+    const { app } = makeApp({ paymentLink: depsFromEnv(env).paymentLink });
+    const slug = await createPreview(app);
+    assert.ok(!(await page(app, `/p/${slug}`)).html.includes('class="pay"'), 'not set yet');
+    env.STRIPE_PAYMENT_LINK = LINK;
+    assert.ok((await page(app, `/p/${slug}`)).html.includes(buyLink(slug)), 'set: the same app shows it');
+    delete env.STRIPE_PAYMENT_LINK;
+    assert.ok(!(await page(app, `/p/${slug}`)).html.includes('class="pay"'), 'unset again: hidden again');
+  });
+
+  test('only an https link without credentials counts; anything else hides the button', () => {
+    assert.equal(paymentLinkFrom(LINK), LINK);
+    assert.equal(paymentLinkFrom(` ${LINK} `), LINK, 'stray spaces from a paste');
+    assert.equal(paymentLinkFrom('https://buy.stripe.com/test_link'), 'https://buy.stripe.com/test_link');
+    const withCredentials = ['https://', 'user', ':', 'pw'.repeat(4), '@example.com/pay'].join('');
+    for (const bad of [undefined, null, '', 'example.com/pay', 'http://example.com/pay', 'javascript:alert(1)', 'data:text/html,x', withCredentials, `${LINK}?${'x'.repeat(2100)}`]) {
+      assert.equal(paymentLinkFrom(bad), null, String(bad).slice(0, 40));
+    }
+    assert.equal(depsFromEnv({ STRIPE_PAYMENT_LINK: 'http://example.com/pay' }).paymentLink(), null);
+  });
+
+  test("the link keeps the Payment Link's own query and puts the preview in client_reference_id", () => {
+    assert.equal(paymentLinkFor(LINK, 'AbCdEfGhIjKlMnOpQrStUv'), `${LINK}?client_reference_id=AbCdEfGhIjKlMnOpQrStUv`);
+    assert.equal(
+      paymentLinkFor(`${LINK}?locale=en&client_reference_id=other`, 'AbCdEfGhIjKlMnOpQrStUv'),
+      `${LINK}?locale=en&client_reference_id=AbCdEfGhIjKlMnOpQrStUv`,
+    );
+  });
+
+  test('with STRIPE_SECRET_KEY as well, Stripe Checkout is used: its session names the preview and returns to it', async () => {
     const { checkout } = fakeCheckout();
-    const { app } = makeApp({ checkout });
+    const { app } = makeApp({ checkout, paymentLink: () => LINK });
     const slug = await createPreview(app);
     for (const path of [`/p/${slug}`, `/p/${slug}/bundle.zip`]) {
       const { html } = await page(app, path);
       assert.match(html, /<form method="post" action="\/checkout" data-checkout>/, path);
       assert.match(html, /Unlock for \$9/, path);
+      assert.ok(!html.includes(LINK), path);
       assert.doesNotMatch(html, /switched on yet/, path);
     }
+  });
+
+  test("no Buy link in a preview's last hour: it goes straight to Stripe, so the page must not offer what checkout would refuse", async () => {
+    const now = new Date('2026-11-13T12:00:00Z');
+    const { app, store } = makeApp({ paymentLink: () => LINK, now: () => new Date(now) });
+    await store.createPet(petRecord({ createdAt: new Date(now.getTime() - 30 * DAY_MS + 30 * 60 * 1000) }));
+    const { html } = await page(app, `/p/${petRecord().slug}`);
+    assert.doesNotMatch(html, /class="pay"/);
+    assert.match(html, /expires within the hour/);
+    await store.createPet(petRecord({ slug: 'two-hours-left-slug-01', createdAt: new Date(now.getTime() - 30 * DAY_MS + 2 * 60 * 60 * 1000) }));
+    assert.match((await page(app, '/p/two-hours-left-slug-01')).html, /class="pay"/, 'two hours left: still on offer');
+  });
+
+  test('a paid preview shows the download, not the Buy link', async () => {
+    const { app, store } = makeApp({ paymentLink: () => LINK });
+    await store.createPet(petRecord());
+    await store.markPaid(petRecord().slug, { sessionId: 'manual', at: new Date() });
+    const { html } = await page(app, `/p/${petRecord().slug}`);
+    assert.doesNotMatch(html, /class="pay"/);
+    assert.match(html, /Download the bundle/);
   });
 });
 
@@ -314,11 +405,11 @@ describe('the visit beacon is loaded only on the production deployment', () => {
     assert.equal(connect, `connect-src 'self' ${new URL(SIGNAL_ENDPOINT).origin}`);
   });
 
-  test('every pay form (bundle, gift, print) is marked for the checkout signal', async () => {
-    const { readFileSync } = await import('node:fs');
-    const views = readFileSync(new URL('../src/views.js', import.meta.url), 'utf8');
+  test('every pay form (bundle, gift, print) and the Payment Link button are marked for the checkout signal', async () => {
+    const views = await readFile(new URL('../src/views.js', import.meta.url), 'utf8');
     for (const action of ['/checkout', '/gift', '/print']) {
       assert.match(views, new RegExp(`<form method="post" action="${action}"[^>]*data-checkout`), action);
     }
+    assert.match(views, /<a class="pay" href="\$\{[^}]+\}"[^>]*data-checkout>/, 'the Payment Link');
   });
 });

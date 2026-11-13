@@ -183,10 +183,10 @@ describe('POST /stripe/webhook (M3 exit criterion 2)', () => {
     assert.ok((await store.getPet(slug)).paidAt);
   });
 
-  test('client_reference_id alone unlocks nothing: a Payment Link lets the buyer set it from the URL', async () => {
+  test("client_reference_id alone unlocks nothing on a session that isn't from a Payment Link", async () => {
     const { app, store, logs } = makeApp({ webhookSecret: SECRET });
     const slug = await createPreview(app);
-    const event = stripeEvent(slug, { session: { metadata: {}, amount_total: 100 } });
+    const event = stripeEvent(slug, { session: { metadata: {} } });
     assert.equal((await postWebhook(app, event, { secret: SECRET, timestamp: nowSeconds() })).status, 200);
     assert.equal((await store.getPet(slug)).paidAt, null);
     assert.ok(logs.some((l) => l.startsWith('error') && l.includes('refund')));
@@ -245,6 +245,75 @@ describe('POST /stripe/webhook (M3 exit criterion 2)', () => {
     const body = 'x'.repeat(MAX_WEBHOOK_BYTES + 1);
     const res = await postWebhook(app, null, { body, secret: SECRET, timestamp: nowSeconds() });
     assert.equal(res.status, 413);
+  });
+});
+
+// Go-live: the Buy button can be a Stripe Payment Link (STRIPE_PAYMENT_LINK) instead of a Checkout Session made by
+// the app. The link carries the preview in client_reference_id, which Stripe copies to the session it makes.
+describe('POST /stripe/webhook: a Payment Link payment (STRIPE_PAYMENT_LINK)', () => {
+  const PAYMENT_LINK_ID = ['plink', 'test', 'A1b2C3d4'.repeat(3)].join('_');
+  const linkSession = (slug, overrides = {}) => ({ payment_link: PAYMENT_LINK_ID, client_reference_id: slug, metadata: {}, ...overrides });
+
+  test('a paid $9 session from the link unlocks the preview its client_reference_id names', async () => {
+    const { app, store, logs } = makeApp({ webhookSecret: SECRET });
+    const slug = await createPreview(app);
+    const res = await postWebhook(app, stripeEvent(slug, { session: linkSession(slug) }), { secret: SECRET, timestamp: nowSeconds() });
+    assert.equal(res.status, 200);
+    assert.ok((await store.getPet(slug)).paidAt instanceof Date, 'paid');
+    assert.equal(store.records.get(slug).stripeSession, fakeSessionId(1));
+    assert.ok(logs.some((l) => l.startsWith('info') && l.includes(`preview ${slug} paid`)));
+  });
+
+  test('the same event again changes nothing; a second payment for the preview is logged for a refund', async () => {
+    const { app, store, logs } = makeApp({ webhookSecret: SECRET });
+    const slug = await createPreview(app);
+    const event = stripeEvent(slug, { session: linkSession(slug) });
+    await postWebhook(app, event, { secret: SECRET, timestamp: nowSeconds() });
+    const before = structuredClone(store.records.get(slug));
+    await postWebhook(app, event, { secret: SECRET, timestamp: nowSeconds() });
+    const second = stripeEvent(slug, { id: 'evt_test_2', session: linkSession(slug, { id: fakeSessionId(2) }) });
+    assert.equal((await postWebhook(app, second, { secret: SECRET, timestamp: nowSeconds() })).status, 200);
+    assert.deepEqual(store.records.get(slug), before);
+    assert.ok(logs.some((l) => l.startsWith('warn') && l.includes('refund') && l.includes(fakeSessionId(2))));
+  });
+
+  test('a link payment of another amount or currency (a different link on the account) unlocks nothing', async () => {
+    const { app, store, logs } = makeApp({ webhookSecret: SECRET });
+    const slug = await createPreview(app);
+    for (const extra of [{ amount_total: 100 }, { amount_total: 2900 }, { currency: 'eur' }]) {
+      const res = await postWebhook(app, stripeEvent(slug, { session: linkSession(slug, extra) }), { secret: SECRET, timestamp: nowSeconds() });
+      assert.equal(res.status, 200, JSON.stringify(extra));
+    }
+    assert.equal((await store.getPet(slug)).paidAt, null);
+    assert.equal(logs.filter((l) => l.startsWith('error') && l.includes('not the bundle price')).length, 3);
+  });
+
+  test('a link opened without a preview (or with a malformed one) unlocks nothing and is logged for a refund', async () => {
+    const { app, store, logs } = makeApp({ webhookSecret: SECRET });
+    const slug = await createPreview(app);
+    for (const reference of [null, undefined, '', 'short', "x'; DROP TABLE pets; --", 42]) {
+      const event = stripeEvent(slug, { session: linkSession(reference) });
+      assert.equal((await postWebhook(app, event, { secret: SECRET, timestamp: nowSeconds() })).status, 200, String(reference));
+    }
+    assert.equal((await store.getPet(slug)).paidAt, null);
+    assert.equal(logs.filter((l) => l.startsWith('error') && l.includes('names no valid preview') && l.includes('refund')).length, 6);
+  });
+
+  test('a link payment for an unknown preview is logged for a refund', async () => {
+    const { app, logs } = makeApp({ webhookSecret: SECRET });
+    const unknown = 'AAAAAAAAAAAAAAAAAAAAAA';
+    await postWebhook(app, stripeEvent(unknown, { session: linkSession(unknown) }), { secret: SECRET, timestamp: nowSeconds() });
+    assert.ok(logs.some((l) => l.startsWith('error') && l.includes(`unknown preview ${unknown}`) && l.includes('refund')));
+  });
+
+  test("our own session's metadata wins over client_reference_id", async () => {
+    const { app, store } = makeApp({ webhookSecret: SECRET });
+    const mine = await createPreview(app);
+    const other = await createPreview(app);
+    const event = stripeEvent(mine, { session: { payment_link: PAYMENT_LINK_ID, client_reference_id: other, metadata: { slug: mine } } });
+    await postWebhook(app, event, { secret: SECRET, timestamp: nowSeconds() });
+    assert.ok((await store.getPet(mine)).paidAt);
+    assert.equal((await store.getPet(other)).paidAt, null);
   });
 });
 

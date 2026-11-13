@@ -119,6 +119,19 @@ describe('beacon.js: what it sends', () => {
     document.dispatch('submit', { target: null });
     assert.deepEqual(kinds(sends), ['visit', 'checkout', 'checkout']);
   });
+
+  test('checkout: each click on the Buy link (a[data-checkout], the Stripe Payment Link), and only that link', () => {
+    const { document, sends } = load();
+    // closest() as the DOM answers it: the element itself or an ancestor matching the selector, else null.
+    const node = (matches) => ({ closest: (selector) => (matches.includes(selector) ? {} : null) });
+    document.dispatch('click', { target: node(['a[data-checkout]']) }); // the link, or the text inside it
+    document.dispatch('click', { target: node([]) }); // any other link or button
+    document.dispatch('click', { target: node(['form[data-checkout]']) }); // a pay form's button: counted on submit
+    document.dispatch('click', { target: null });
+    document.dispatch('click', { target: {} }); // no closest(): a text node in an old browser
+    document.dispatch('click', { target: node(['a[data-checkout]']) });
+    assert.deepEqual(kinds(sends), ['visit', 'checkout', 'checkout']);
+  });
 });
 
 describe('beacon.js: when it stays silent', () => {
@@ -126,6 +139,7 @@ describe('beacon.js: when it stays silent', () => {
     const { document, sends } = load({ webdriver: true });
     document.dispatch('alterpaw:activate');
     document.dispatch('submit', { target: { hasAttribute: () => true } });
+    document.dispatch('click', { target: { closest: () => ({}) } });
     assert.deepEqual(sends, []);
   });
 
@@ -134,6 +148,7 @@ describe('beacon.js: when it stays silent', () => {
       const { document, sends, session } = load({ local: fakeStorage({ 'repohq:notrack': value }) });
       document.dispatch('alterpaw:activate');
       document.dispatch('submit', { target: { hasAttribute: () => true } });
+      document.dispatch('click', { target: { closest: () => ({}) } });
       assert.deepEqual(sends, [], JSON.stringify(value));
       assert.equal(session.data.size, 0, 'nothing is written either');
     }

@@ -332,11 +332,32 @@ function giftForm(pet, gift) {
 </details>`;
 }
 
-// The $9 offer: a plain form to /checkout, which answers with a redirect to Stripe Checkout.
-// `confirming` is set when the buyer is back from Stripe but the webhook hasn't marked the preview paid yet.
-// `payments` is false until Stripe is configured: then there's no Buy button to lead to a 503, only a note.
-// Pay forms carry `data-checkout`, which the visit beacon counts on submit.
-function offerSection(pet, { confirming = false, gift = null, payments = false } = {}) {
+// The Buy button, per `buy` from app.js (buyOption):
+//   checkout  a plain form to /checkout, which answers with a redirect to Stripe Checkout;
+//   link      the Stripe Payment Link (STRIPE_PAYMENT_LINK) for this preview, in a new tab so this page stays
+//             open to come back to;
+//   closed    the link, but the preview expires within the hour;
+//   null      payments aren't configured: no button to lead nowhere, only a note.
+// Both kinds of button carry `data-checkout`, which the visit beacon counts (a form on submit, the link on click).
+function buyButton(pet, buy) {
+  if (buy?.via === 'checkout') {
+    return html`<form method="post" action="/checkout" data-checkout>
+    <input type="hidden" name="slug" value="${pet.slug}">
+    <button type="submit" class="pay">Unlock for ${PRICE_LABEL}</button>
+  </form>`;
+  }
+  if (buy?.via === 'link') {
+    return html`<p><a class="pay" href="${buy.href}" target="_blank" rel="noopener" data-checkout>Unlock for ${PRICE_LABEL}</a></p>
+  <p class="fine">Stripe's payment page opens in a new tab. Once you've paid, come back to this page: it unlocks here as soon as the payment is confirmed. Keep its link, it's where your bundle is.</p>`;
+  }
+  if (buy?.via === 'closed') return html`<p class="notice">This preview expires within the hour, too soon to buy it.</p>`;
+  return html`<p class="notice">Payments aren't switched on yet, so the bundle can't be bought today. The free preview and the share images work now.</p>`;
+}
+
+// The $9 offer. `confirming` is set when the buyer is back from Stripe Checkout but the webhook hasn't marked the
+// preview paid yet.
+function offerSection(pet, { confirming = false, gift = null, buy = null } = {}) {
+  const forSale = buy?.via === 'checkout' || buy?.via === 'link';
   return html`<section class="unlock" aria-labelledby="unlock-title">
   <h2 id="unlock-title">Get the clean bundle: ${PRICE_LABEL}</h2>
   ${confirming
@@ -347,14 +368,9 @@ function offerSection(pet, { confirming = false, gift = null, payments = false }
     <li>A printable PDF with all four</li>
     <li>One free rewrite of the jokes if they don't land</li>
   </ul>
-  ${payments
-    ? html`<form method="post" action="/checkout" data-checkout>
-    <input type="hidden" name="slug" value="${pet.slug}">
-    <button type="submit" class="pay">Unlock for ${PRICE_LABEL}</button>
-  </form>`
-    : html`<p class="notice">Payments aren't switched on yet, so the bundle can't be bought today. The free preview and the share images work now.</p>`}
+  ${buyButton(pet, buy)}
   ${gift ? giftForm(pet, gift) : ''}
-  <p class="fine">${payments ? 'One-time payment through Stripe, no account. ' : ''}<a href="/terms">Terms and refunds</a> · <a href="/privacy">Privacy</a></p>
+  <p class="fine">${forSale ? 'One-time payment through Stripe, no account. ' : ''}<a href="/terms">Terms and refunds</a> · <a href="/privacy">Privacy</a></p>
 </section>`;
 }
 
@@ -445,10 +461,10 @@ function bundleSection(pet, retentionDays) {
 // Policy numbers and lists (retention, report reasons) come from app.js, the one place they're defined.
 // `checkoutReturn` is true on Stripe's success URL. M4: `orders` are the preview's paid orders, `gift` the gift
 // form's settings (null when gifts are off or it's too late for one), `prints` whether the poster is on offer.
-// Go-live: `payments` whether the bundle can be bought (Stripe configured), `site` as in layout().
+// Go-live: `buy` how the bundle can be bought (buyButton), `site` as in layout().
 export function previewPage(
   pet,
-  { reportReasons, retentionDays, checkoutReturn = false, orders = [], gift = null, prints = false, payments = false, site = null },
+  { reportReasons, retentionDays, checkoutReturn = false, orders = [], gift = null, prints = false, buy = null, site = null },
 ) {
   const style = SPECIES_STYLE[pet.species] ?? SPECIES_STYLE.other;
   const ego = findAlterEgo(pet.alterEgo) ?? { label: pet.alterEgo };
@@ -465,7 +481,7 @@ export function previewPage(
     ${tradingCard(pet, style, ego)}
     ${bioCard(pet, style, ego)}
   </section>
-  ${pet.paidAt ? bundleSection(pet, retentionDays) : offerSection(pet, { confirming: checkoutReturn, gift, payments })}
+  ${pet.paidAt ? bundleSection(pet, retentionDays) : offerSection(pet, { confirming: checkoutReturn, gift, buy })}
   ${pet.paidAt && prints ? printSection(pet) : ''}
   ${shareSection(pet, retentionDays)}
   <section class="cta">${makeYoursLink()}</section>
@@ -501,13 +517,13 @@ export const reportThanksPage = () =>
   ]);
 
 // 402 for the bundle before payment: the offer itself, so the page is one click from paying. `print` is set when
-// it answers a printed-poster order, which comes after the bundle. `payments` and `site` as in previewPage().
-export function paymentRequiredPage(pet, { print = false, payments = false, site = null } = {}) {
+// it answers a printed-poster order, which comes after the bundle. `buy` and `site` as in previewPage().
+export function paymentRequiredPage(pet, { print = false, buy = null, site = null } = {}) {
   const body = html`<main class="message">
   <a class="brand" href="/">alterpaw</a>
   <h1>The clean bundle is ${PRICE_LABEL}</h1>
   <p>${print ? 'The printed poster is offered once the bundle for this preview is paid for.' : 'The download unlocks once the bundle for this preview is paid for.'}</p>
-  ${offerSection(pet, { payments })}
+  ${offerSection(pet, { buy })}
   <p><a href="/p/${pet.slug}">Back to the preview</a></p>
 </main>`;
   return layout({ title: 'Unlock the bundle — alterpaw', robots: 'noindex, nofollow', body, referrer: 'same-origin', site });
@@ -604,7 +620,7 @@ export const paymentsUnavailablePage = ({ retry }) =>
 // /terms and /privacy (they replace M3's single /legal page, which now redirects to /terms): what Stripe asks a
 // merchant's site to show, and what a buyer needs before paying. Keep them in step with the code (retention,
 // processors, what the model receives, the visit beacon in site.js). `site` as in layout().
-const LEGAL_UPDATED = 'November 8, 2026';
+const LEGAL_UPDATED = 'November 13, 2026';
 
 const contactSection = () => html`<h2 id="contact">Contact</h2>
   <p>Questions, problems or requests: open an issue at <a href="${ISSUES_URL}">${ISSUES_URL.replace('https://', '')}</a>. Issues are public, so don't post your preview's link, an email address or a street address there. To have a preview removed, use "Report this page" on it, or reply to your Stripe receipt if you bought something.</p>`;
@@ -618,7 +634,7 @@ export function termsPage({ retentionDays, site = null }) {
   <h2 id="service">The service</h2>
   <p>alterpaw turns one photo of your pet and a few details into a funny, made-up "secret life": a wanted poster, a newspaper front page, a trading card and a character bio. The text is written by an AI model. It is parody, not fact.</p>
   <p>Upload only a photo of a pet that you have the right to use, and no photos of people. Previews that break these rules or are reported by several people may be taken down.</p>
-  <p>The preview is free and watermarked. The bundle costs ${PRICE_LABEL} (US dollars), paid once through Stripe, for one preview. It unlocks the four cards as high-res images and a printable PDF without the watermark, plus one rewrite of the text. It is delivered at once on the preview page, for your personal use, including printing and sharing.</p>
+  <p>The preview is free and watermarked. The bundle costs ${PRICE_LABEL} (US dollars), paid once through Stripe, for one preview. It unlocks the four cards as high-res images and a printable PDF without the watermark, plus one rewrite of the text. It is delivered on the preview page as soon as Stripe confirms the payment, for your personal use, including printing and sharing.</p>
   <p>Previews and their downloads are available until the photo is deleted, ${retentionDays} days after upload, so download the bundle before then.</p>
   <p><b>Gifts.</b> You can buy the bundle as a gift (${priceLabel('gift')}) for a pet whose photo you have the right to use. We email the recipient one message with the link on the delivery date you choose, in the time zone you choose, and the link works until the photo is deleted. You can pick a date up to about a week before that. If the preview is taken down before the date, the email isn't sent and you get a refund.</p>
   <p><b>Printed posters.</b> Once the bundle is paid for, you can order the wanted poster printed on ${PRINT_SIZE_LABEL} matte art paper for ${PRINT_PRICE_LABEL}, shipping included, to an address in the United States. It's printed and shipped by our print partner, usually within two weeks.</p>
@@ -648,7 +664,7 @@ export function privacyPage({ retentionDays, site = null }) {
 
   <h2 id="what-we-store">What we store</h2>
   <p>We store your pet's photo, name, species, traits and alter ego, the generated text and the time of upload. The photo is deleted ${retentionDays} days after upload; the text stays so the link can say it has expired.</p>
-  <p>Payments are handled by Stripe: we never see your card details. We keep the Stripe session id and the time of payment, to match payments to previews and to handle refunds.</p>
+  <p>Payments are handled by Stripe: we never see your card details. Stripe is told which preview you're paying for (its id, which is also in the preview's link) so the payment unlocks the right one. We keep the Stripe session id and the time of payment, to match payments to previews and to handle refunds.</p>
   <p>For a gift we store the recipient's email address and name, your name, your message and the delivery date, and send the email through Brevo, which receives those to deliver it. For a printed poster we store the shipping address and send it, with the poster, to our print partner Prodigi, which prints and ships it. We erase these details ${retentionDays} days after the order, along with the photo; Stripe, Brevo and Prodigi keep their own records under their own policies.</p>
   <p>When someone reports a page we keep a short hash of their network address for that page, never the address itself, and delete it after ${retentionDays} days.</p>
   <p>No accounts and no ads. Previews are unlisted and search engines are told not to index them, but anyone with the link can see one. To have a preview deleted sooner, reply to your Stripe receipt or use "Report this page" on it.</p>
